@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.env*
+!.env.example
+!.env.local.example
+.data/
+.venv/
+__pycache__/
+*.pyc
+*.tsbuildinfo
+next-env.d.ts
