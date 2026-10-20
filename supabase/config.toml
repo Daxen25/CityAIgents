@@ -1,0 +1,18 @@
+project_id = "agent-city"
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+[db]
+port = 54322
+major_version = 17
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3000"
+[auth.email]
+enable_signup = true
+enable_confirmations = false

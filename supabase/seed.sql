@@ -1,0 +1,1 @@
+-- Agent templates are versioned migration data. No fake missions, runs or users are seeded.
