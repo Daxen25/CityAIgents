@@ -12,7 +12,7 @@ async function main() {
       .join(", "),
   );
   console.log(
-    "Remote migration history: UNKNOWN (requires read-only SQL access; see supabase/inspect.sql)",
+    "Remote migration history: not queried by this script. See docs/m0.3-post-activation.md for reported remote IDs; do not replay local migrations.",
   );
   try {
     const { url, key } = resolveSupabaseConfig(process.env);

@@ -16,9 +16,11 @@
     "typecheck": "npm run typecheck --workspace @agent-city/web",
     "test": "tsx --test packages/core/test/*.test.ts tests/*.test.ts",
     "test:runtime": "services/runtime/.venv/bin/python -m unittest discover -s services/runtime/tests -v",
-    "check": "npm run typecheck && npm test && npm run test:runtime && npm run build",
+    "check": "npm run typecheck && npm test && npm run test:runtime && npm run test:auth-persistence && npm run build",
     "smoke": "node scripts/smoke.mjs",
-    "verify:supabase": "node --use-env-proxy --import tsx scripts/verify-supabase.ts"
+    "verify:supabase": "node --use-env-proxy --import tsx scripts/verify-supabase.ts",
+    "verify": "npm run verify:supabase",
+    "test:auth-persistence": "node scripts/test-auth-persistence.mjs"
   },
   "devDependencies": {
     "tsx": "4.23.15",

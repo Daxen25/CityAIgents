@@ -1,8 +1,10 @@
 import "server-only";
 import { mode } from "./config";
+import { readAgentDefinitions } from "./agent-definitions";
 import { supabase } from "./supabase";
 import { localCreate, localSnapshot, localTransition } from "./mock-store";
 import {
+  agentDefinitions,
   missionInput,
   type Action,
   type Mission,
@@ -96,4 +98,13 @@ export async function transition(user: string, id: string, action: Action) {
     await supabase()
   ).rpc("transition_mission", { mid: id, requested_action: action });
   check(error);
+}
+
+export async function listAgentDefinitions() {
+  if (mode() === "mock")
+    return agentDefinitions.map((definition) => ({
+      ...definition,
+      version: 1,
+    }));
+  return readAgentDefinitions(await supabase());
 }

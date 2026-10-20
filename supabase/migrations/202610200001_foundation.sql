@@ -1,6 +1,6 @@
 -- M0: all user data is scoped to a workspace. No service-role key in the app.
 create schema if not exists private;
-revoke all on schema private from public;
+revoke all on schema private from public, anon;
 grant usage on schema private to authenticated;
 
 create table public.workspaces (
@@ -74,7 +74,7 @@ create function private.workspace_role(wid uuid) returns text
 language sql stable security definer set search_path = '' as $$
  select role from public.workspace_members where workspace_id=wid and user_id=(select auth.uid())
 $$;
-revoke all on function private.workspace_role(uuid) from public;
+revoke all on function private.workspace_role(uuid) from public, anon;
 grant execute on function private.workspace_role(uuid) to authenticated;
 
 alter table public.workspaces enable row level security;
@@ -162,5 +162,5 @@ end $$;
 create function public.create_workspace(workspace_name text) returns uuid language sql security invoker set search_path='' as $$ select private.create_workspace(workspace_name) $$;
 create function public.create_mission(wid uuid, mission_title text, mission_objective text, mission_kind text) returns uuid language sql security invoker set search_path='' as $$ select private.create_mission(wid,mission_title,mission_objective,mission_kind) $$;
 create function public.transition_mission(mid uuid, requested_action text) returns text language sql security invoker set search_path='' as $$ select private.transition_mission(mid,requested_action) $$;
-revoke all on function private.create_workspace(text), private.create_mission(uuid,text,text,text), private.transition_mission(uuid,text), public.create_workspace(text), public.create_mission(uuid,text,text,text), public.transition_mission(uuid,text) from public;
+revoke all on function private.create_workspace(text), private.create_mission(uuid,text,text,text), private.transition_mission(uuid,text), public.create_workspace(text), public.create_mission(uuid,text,text,text), public.transition_mission(uuid,text) from public, anon;
 grant execute on function private.create_workspace(text), private.create_mission(uuid,text,text,text), private.transition_mission(uuid,text), public.create_workspace(text), public.create_mission(uuid,text,text,text), public.transition_mission(uuid,text) to authenticated;

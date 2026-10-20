@@ -10,8 +10,43 @@ test("Postgres migrations, workspace RLS, approval gate and atomic lifecycle", a
   await db.exec(
     `create role anon; create role authenticated; create schema auth; create table auth.users(id uuid primary key); create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$; grant usage on schema auth to authenticated; grant execute on function auth.uid() to authenticated; create schema storage; create table storage.buckets(id text primary key,name text,public boolean); create table storage.objects(id uuid default gen_random_uuid(),bucket_id text,name text); alter table storage.objects enable row level security; grant usage on schema storage to authenticated; grant select on storage.objects to authenticated; create function storage.foldername(text) returns text[] language sql immutable as $$ select (string_to_array($1,'/'))[1:array_length(string_to_array($1,'/'),1)-1] $$;`,
   );
+  // Model direct Supabase-style grants, which PUBLIC-only revocation cannot remove.
+  await db.exec(
+    "alter default privileges grant execute on functions to anon, authenticated",
+  );
   for (const name of readdirSync("supabase/migrations").sort())
     await db.exec(readFileSync(`supabase/migrations/${name}`, "utf8"));
+  await t.test(
+    "explicit function ACLs deny anon even with direct default grants",
+    async () => {
+      const result = await db.query<{
+        schema_name: string;
+        function_name: string;
+        anon_execute: boolean;
+        authenticated_execute: boolean;
+      }>(`
+      select n.nspname as schema_name,p.proname as function_name,
+        has_function_privilege('anon',p.oid,'execute') as anon_execute,
+        has_function_privilege('authenticated',p.oid,'execute') as authenticated_execute
+      from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+      where n.nspname in ('public','private')
+        and p.proname in ('workspace_role','create_workspace','create_mission','transition_mission')
+    `);
+      assert.equal(result.rows.length, 7);
+      for (const row of result.rows) {
+        assert.equal(
+          row.anon_execute,
+          false,
+          `${row.schema_name}.${row.function_name}`,
+        );
+        assert.equal(
+          row.authenticated_execute,
+          true,
+          `${row.schema_name}.${row.function_name}`,
+        );
+      }
+    },
+  );
   await db.query("insert into auth.users values ($1),($2),($3)", [
     owner,
     outsider,

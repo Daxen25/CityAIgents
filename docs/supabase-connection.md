@@ -1,5 +1,9 @@
 # Existing Supabase project connection
 
+> Historical pre-activation report. Database activation has since been confirmed by the
+> user under different remote version IDs. Follow [the current reconciliation plan](m0.3-post-activation.md);
+> do not execute the old activation/application instructions again.
+
 Project: `atbksxlqgfxvetsgusek`
 
 API origin: `https://atbksxlqgfxvetsgusek.supabase.co`

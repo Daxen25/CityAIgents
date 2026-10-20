@@ -6,6 +6,7 @@ export async function proxy(request: NextRequest) {
   if (process.env.AGENT_CITY_MODE !== "supabase") return response;
   const { url, key } = supabaseConfig();
   const client = createServerClient(url, key, {
+    cookieOptions: { secure: process.env.NODE_ENV === "production" },
     cookies: {
       getAll: () => request.cookies.getAll(),
       setAll(items, headers) {

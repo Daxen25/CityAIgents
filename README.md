@@ -60,13 +60,23 @@ Production mode refuses mock authentication unless the explicit local-only overr
 set. `npm run dev` does not need the override. The mock store and authentication are not
 suitable for production or shared hosting.
 
+## M0.4 authenticated workflow
+
+See [the M0.4 browser checklist](docs/m0.4-authentication-persistence.md) for exact sign-in,
+workspace/mission creation, persistence, refresh and logout steps. The Agents page now
+reads stored definitions in Supabase mode. The application transport is tested against
+an isolated local HTTP fixture (`npm run test:auth-persistence`); hosted signed-in
+acceptance still requires an existing confirmed account. Stop development servers before
+running that test. It never uses the hosted project or real credentials.
+
 ## Existing hosted Supabase project
 
-Project **atbksxlqgfxvetsgusek** is prepared as a configuration target. Live connectivity,
-existing migrations and real authentication are **not verified**: the publishable key is
-missing and this cloud instance's egress proxy currently blocks the project hostname.
-The local app stays in mock mode until those prerequisites are configured. No remote
-schema changes have been made.
+Project **atbksxlqgfxvetsgusek** is reachable and its publishable key is accepted.
+The user confirmed M0.3 database activation. Remote versions differ from the original
+local filenames: **do not reapply the foundation or run migration repair**. See the
+[current integration report and reconciliation plan](docs/m0.3-post-activation.md).
+Signed-in verification still requires an existing user session; no remote writes were
+performed during the post-activation checks.
 
 Set these in secure environment settings or ignored `apps/web/.env.local`:
 
@@ -82,7 +92,7 @@ account. Do not put a service-role/secret key here; configuration rejects privil
 The environment must allow HTTPS to `atbksxlqgfxvetsgusek.supabase.co`.
 
 ```bash
-npm run verify:supabase
+npm run verify
 ```
 
 This command performs GET requests only. An optional `SUPABASE_VERIFY_ACCESS_TOKEN`
@@ -97,8 +107,9 @@ workspace ownership/security review and approval-gated application procedure.
 
 ## Supabase mode (optional; not required for local mock development)
 
-Migrations are in `supabase/migrations`. M0 has no hosted database configured and no
-hosted migrations have been applied. Do not run remote `db push` or deploy without approval.
+Migrations are in `supabase/migrations`. The hosted project is already activated, as
+reported by the user. Do not replay those files, run remote `db push`, or deploy without
+a reviewed reconciliation plan and approval.
 For a disposable **local** stack with Docker, use the pinned CLI:
 
 ```bash
