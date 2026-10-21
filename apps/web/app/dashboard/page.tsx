@@ -180,7 +180,7 @@ export default async function Dashboard({
                     <form action={generateChiefPlan} className="mt-4 border-t pt-4">
                       <input type="hidden" name="id" value={m.id} />
                       <label className="text-sm"><input type="checkbox" name="authorize" value="yes" required />
-                        I authorize one paid model call to plan this mission. Its title and objective will be sent to OpenAI. No tasks will execute.
+                        I authorize one paid model call to plan this mission. Its title and objective will be sent to the configured AI provider. No tasks will execute.
                       </label>
                       <Button variant="outline">Authorize Chief of Staff plan</Button>
                       <p className="mt-2 text-xs">Maximum 3 attempts; retries require fresh authorization.</p>

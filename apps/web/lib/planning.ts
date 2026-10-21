@@ -26,7 +26,7 @@ export async function planMission(id: string, consent: boolean) {
     },
     authenticate: async () => { await requireUser(); },
     capability: () => ({ hash: createHash("sha256").update(randomBytes(32)).digest("hex") }),
-    claim: async (mid, token_hash, selected_model) => checked(await (await supabase()).rpc("begin_chief_plan", { mid, token_hash, selected_model })),
+    claim: async (mid, token_hash, selected_model, selected_provider) => checked(await (await supabase()).rpc("begin_chief_plan", { mid, token_hash, selected_model, selected_provider })),
     generate: generatePlan,
     finish: async (rid, token_hash, plan, error_code) => {
       checked(await finalizer.rpc("finish_chief_plan", { rid, token_hash, plan, error_code }));
@@ -45,7 +45,7 @@ export async function missionPlans(hasPlanningMissions = false) {
   const [artifacts, runs] = await Promise.all([
     db.from("artifacts").select("id,mission_id,content").eq("kind", "chief_of_staff_plan"),
     // Never select the lease capability, key, or privileged client metadata into UI data.
-    db.from("runs").select("id,mission_id,status,failure_code,expires_at").eq("adapter", "openai"),
+    db.from("runs").select("id,mission_id,status,failure_code,expires_at").in("adapter", ["openai", "gemini"]),
   ]);
   return { artifacts: checked(artifacts) ?? [], runs: checked(runs) ?? [] };
 }

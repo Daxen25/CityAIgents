@@ -9,6 +9,11 @@ globalThis.fetch = async (input, init) => {
     if (input instanceof Request) throw new Error("Unexpected SDK transport shape");
     return original(new URL("/openai-fixture", target), init);
   }
+  if (url.hostname === "generativelanguage.googleapis.com") {
+    if (input instanceof Request) throw new Error("Unexpected Gemini transport shape");
+    if (url.pathname !== "/v1beta/models/gemini-flash-latest:generateContent") throw new Error("Unexpected Gemini model");
+    return original(new URL("/gemini-fixture", target), init);
+  }
   if (!["127.0.0.1", "localhost"].includes(url.hostname)) throw new Error("External HTTP blocked in offline integration test");
   return original(input, init);
 };
