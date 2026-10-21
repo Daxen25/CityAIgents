@@ -5,13 +5,14 @@ import { requireUser } from "./auth";
 import { supabase } from "./supabase";
 import { mode, supabaseConfig } from "./config";
 import { executePlanning, generatePlan, planningConfig } from "./planning-engine";
+import { PlanningRpcError, logPlanningDiagnostic, diagnosticError } from "./planning-diagnostics";
 
 export function planningEnabled() {
   return mode() === "supabase" && process.env.AGENT_CITY_AI_PLANNING_ENABLED === "true";
 }
-function checked<T>(result: { data: T; error: unknown }): T {
+function checked<T>(result: { data: T; error: unknown; status?: number }): T {
   // Never send provider/Supabase internals, secrets or prompt contents to the browser.
-  if (result.error) throw new Error("Planning operation denied or unavailable. Check mission state, ownership and remaining attempts.");
+  if (result.error) throw new PlanningRpcError(result.error, result.status);
   return result.data;
 }
 export async function planMission(id: string, consent: boolean) {
@@ -28,6 +29,7 @@ export async function planMission(id: string, consent: boolean) {
     capability: () => ({ hash: createHash("sha256").update(randomBytes(32)).digest("hex") }),
     claim: async (mid, token_hash, selected_model, selected_provider) => checked(await (await supabase()).rpc("begin_chief_plan", { mid, token_hash, selected_model, selected_provider })),
     generate: generatePlan,
+    diagnostic: logPlanningDiagnostic,
     finish: async (rid, token_hash, plan, error_code) => {
       checked(await finalizer.rpc("finish_chief_plan", { rid, token_hash, plan, error_code }));
     },
@@ -37,7 +39,15 @@ export async function recoverPlan(id: string) {
   // Recovery remains available with the feature flag off; it never calls a model.
   if (mode() !== "supabase") throw new Error("AI recovery is unavailable in mock mode");
   await requireUser();
-  checked(await (await supabase()).rpc("recover_chief_plan", { mid: id }));
+  const start = performance.now();
+  logPlanningDiagnostic({ stage: "recover", outcome: "started", elapsedMs: 0 });
+  try {
+    checked(await (await supabase()).rpc("recover_chief_plan", { mid: id }));
+    logPlanningDiagnostic({ stage: "recover", outcome: "succeeded", elapsedMs: performance.now() - start });
+  } catch (error) {
+    logPlanningDiagnostic({ stage: "recover", outcome: "failed", elapsedMs: performance.now() - start, ...diagnosticError(error) });
+    throw error;
+  }
 }
 export async function missionPlans(hasPlanningMissions = false) {
   if (!planningEnabled() && !hasPlanningMissions) return { artifacts: [], runs: [] };

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { planSchema, type Plan } from "@agent-city/core";
 
 import { generatePlan, PlanningFailure } from "./planning-providers";
+import { diagnosticError, type PlanningDiagnostic, type PlanningStage } from "./planning-diagnostics";
 export { generatePlan, generateOpenAIPlan, generateGeminiPlan, PlanningFailure } from "./planning-providers";
 export type AIProvider = "gemini" | "openai";
 export type PlanningConfig = { provider: AIProvider; model: string; apiKey: string; serviceKey: string };
@@ -31,24 +32,43 @@ export type PlanningDependencies = {
   capability(): { hash: string };
   generate(config: PlanningConfig, mission: { title: string; objective: string }): Promise<Plan>;
   finish(runId: string, hash: string, plan: Plan | null, error: string | null): Promise<void>;
+  diagnostic?(event: PlanningDiagnostic): void;
 };
 export async function executePlanning(id: string, consent: boolean, deps: PlanningDependencies) {
   z.uuid().parse(id);
   if (consent !== true) throw new Error("Explicit owner authorization is required for one model call");
   const config = deps.config(); // Disabled/mock mode fails before any database or provider work.
   await deps.authenticate();
+  const start = performance.now();
+  let runId: string | undefined;
+  function report(stage: PlanningStage, outcome: PlanningDiagnostic["outcome"], error?: unknown) {
+    try {
+      deps.diagnostic?.({ stage, outcome, provider: config.provider, runId, elapsedMs: performance.now() - start, ...diagnosticError(error) });
+    } catch { /* diagnostics must not affect planning */ }
+  }
   const { hash } = deps.capability();
-  const claimed = await deps.claim(id, hash, config.model, config.provider); // DB atomically checks owner and attempt limit.
+  report("claim", "started");
+  let claimed: Awaited<ReturnType<PlanningDependencies["claim"]>>;
+  try {
+    claimed = await deps.claim(id, hash, config.model, config.provider); // DB atomically checks owner and attempt limit.
+    runId = claimed.runId;
+    report("claim", "succeeded");
+  } catch (error) { report("claim", "failed", error); throw error; }
   let plan: Plan;
+  report("generation", "started");
   try {
     plan = planSchema.parse(await deps.generate(config, { title: claimed.title, objective: claimed.objective }));
+    report("generation", "succeeded"); // Evidence of a returned, locally validated plan, without logging content.
   } catch (error) {
+    report("generation", "failed");
     const failure = error instanceof PlanningFailure ? error : new PlanningFailure("invalid_output");
-    try { await deps.finish(claimed.runId, hash, null, failure.code); }
-    catch { throw new Error("Planning interrupted. Wait two minutes, then recover the run before retrying."); }
+    report("finalize_failure", "started");
+    try { await deps.finish(claimed.runId, hash, null, failure.code); report("finalize_failure", "succeeded"); }
+    catch (error) { report("finalize_failure", "failed", error); throw new Error("Planning interrupted. Wait two minutes, then recover the run before retrying."); }
     throw failure;
   }
   // A persistence failure is ambiguous: never retry the model or overwrite with failure.
-  try { await deps.finish(claimed.runId, hash, plan, null); }
-  catch { throw new Error("Plan persistence could not be confirmed. Refresh; recover only if still running after two minutes."); }
+  report("finalize_plan", "started");
+  try { await deps.finish(claimed.runId, hash, plan, null); report("finalize_plan", "succeeded"); }
+  catch (error) { report("finalize_plan", "failed", error); throw new Error("Plan persistence could not be confirmed. Refresh; recover only if still running after two minutes."); }
 }

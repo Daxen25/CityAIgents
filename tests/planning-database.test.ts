@@ -221,6 +221,36 @@ test("M1.1 PostgreSQL authorization, atomic persistence, retries and isolation",
       const next = await begin(interrupted); // Explicit provider switch only after recovery/consent.
       await finish(next.runId); await asUser();
     });
+    await t.test("a finalizer constraint error rolls back artifacts/tasks and requires explicit expired-run recovery", async () => {
+      const interrupted = await mission();
+      const claim = await scalar<{runId: string}>("select public.begin_chief_plan($1,$2,'fixture','gemini')", [interrupted, hash]);
+      await db.exec("reset role");
+      await db.exec("alter table public.tasks add constraint offline_persistence_failure check (title <> 'Reject offline proposal')");
+      const failingPlan = { ...plan, tasks: [{ ...plan.tasks[0], title: "Reject offline proposal" }] };
+      try {
+        await assert.rejects(finish(claim.runId, failingPlan), (error: Error & { code?: string }) => {
+          assert.equal(error.code, "23514"); return true;
+        });
+        await asUser();
+        assert.equal(await scalar<number>("select count(*)::int from public.artifacts where run_id=$1", [claim.runId]), 0);
+        assert.equal(await scalar<number>("select count(*)::int from public.tasks where plan_run_id=$1", [claim.runId]), 0);
+        assert.equal(await scalar("select status from public.runs where id=$1", [claim.runId]), "running");
+        await assert.rejects(db.query("select public.recover_chief_plan($1)", [interrupted]), /not expired/);
+        await db.exec("reset role");
+        await db.query("update public.runs set expires_at=clock_timestamp()-interval '1 second' where id=$1", [claim.runId]);
+        await asUser();
+        await db.query("select public.recover_chief_plan($1)", [interrupted]);
+        await assert.rejects(finish(claim.runId), /lease/);
+        await asUser();
+        const fresh = await begin(interrupted); // An explicitly authorized new attempt, not an automatic retry.
+        await finish(fresh.runId);
+        await asUser();
+        assert.equal(await scalar<number>("select count(*)::int from public.artifacts where run_id=$1", [fresh.runId]), 1);
+      } finally {
+        await db.exec("reset role; alter table public.tasks drop constraint offline_persistence_failure");
+        await asUser();
+      }
+    });
     await t.test("application orchestration and PostgreSQL combine to reject duplicate calls before provider", async () => {
       const integrated = await mission();
       let modelCalls = 0;

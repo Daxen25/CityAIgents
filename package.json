@@ -15,7 +15,7 @@
     "start": "npm run start --workspace @agent-city/web",
     "typecheck": "npm run typecheck --workspace @agent-city/web",
     "test": "tsx --test packages/core/test/*.test.ts tests/*.test.ts",
-    "test:planning-http": "node scripts/test-auth-persistence.mjs --planning && node scripts/test-auth-persistence.mjs --planning --openai",
+    "test:planning-http": "node scripts/test-auth-persistence.mjs --planning && node scripts/test-auth-persistence.mjs --planning --openai && node scripts/test-auth-persistence.mjs --planning --persistence-failure",
     "test:runtime": "services/runtime/.venv/bin/python -m unittest discover -s services/runtime/tests -v",
     "check": "npm run typecheck && npm test && npm run test:runtime && npm run test:auth-persistence && npm run test:planning-http && npm run build",
     "smoke": "node scripts/smoke.mjs",

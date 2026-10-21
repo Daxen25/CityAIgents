@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 const planningTest = process.argv.includes("--planning");
+const persistenceFailure = process.argv.includes("--persistence-failure");
 const provider = process.argv.includes("--openai") ? "openai" : "gemini";
 const planningModel = provider === "gemini" ? "gemini-flash-latest" : "gpt-4.1-mini";
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -106,6 +107,7 @@ const fixture = createServer(async (req, res) => {
       assert.equal(req.headers.authorization, "Bearer sb_secret_m11_fixture");
       assert.deepEqual(body, { rid: planningRid, token_hash: planningHash, plan: offlinePlan, error_code: null });
       assert.ok(!Object.hasOwn(body, "actor_id"));
+      if (persistenceFailure) return send(400, { code: "23514", message: "private-plan-sensitive-marker", details: planningHash, hint: "offline-gemini-fixture" });
       state.runs[0].status = "completed";
       state.missions.find((m) => m.id === planningMid).status = "awaiting_approval";
       state.artifacts.push({ id: "fixture-plan", mission_id: planningMid, kind: "chief_of_staff_plan", content: offlinePlan });
@@ -166,6 +168,14 @@ const fixture = createServer(async (req, res) => {
         m.execution_mode = "chief_of_staff";
         state.runs.push({ id: planningRid, mission_id: planningMid, status: "running", failure_code: null, expires_at: new Date(Date.now()+120000).toISOString() });
         return send(200, { runId: planningRid, title: m.title, objective: m.objective });
+      }
+      if (rpc === "recover_chief_plan") {
+        assert.equal(body.mid, planningMid);
+        if (Date.parse(state.runs[0].expires_at) > Date.now()) return send(400, { code: "P0001", message: "Planning lease has not expired" });
+        state.runs[0].status = "failed";
+        state.runs[0].failure_code = "interrupted";
+        state.missions.find((m) => m.id === planningMid).status = "failed";
+        return send(200, null);
       }
       assert.equal(rpc, "transition_mission");
       assert.equal(body.mid, mid);
@@ -266,10 +276,10 @@ const app = spawn(
 );
 let logs = "";
 app.stdout.on("data", (b) => {
-  logs = (logs + b).slice(-4000);
+  logs = (logs + b).slice(-30000);
 });
 app.stderr.on("data", (b) => {
-  logs = (logs + b).slice(-4000);
+  logs = (logs + b).slice(-30000);
 });
 async function request(path, options = {}) {
   const response = await fetch(base + path, {
@@ -414,21 +424,47 @@ try {
     assert.match(unauthenticated, /login/);
     for (const [k,v] of savedJar) jar.set(k,v);
     assert.equal(providerCalls, 0);
-    assert.equal(await submit("/dashboard", planForm, { authorize: "yes" }), "/dashboard");
+    const planningResult = await submit("/dashboard", planForm, { authorize: "yes" });
     assert.equal(providerCalls, 1);
-    html = await (await request("/dashboard")).text();
-    assert.match(html, /Offline fixture plan/);
-    assert.match(html, /Review fixture evidence/);
-    assert.match(html, /Human-reviewed fixture report/);
-    assert.match(html, /human review required/);
-    assert.match(html, /not executable/);
-    assert.doesNotMatch(html, /offline-openai-fixture|offline-gemini-fixture|sb_secret_m11_fixture/);
-    assert.doesNotMatch(html, new RegExp(planningHash));
-    const duplicate = await submit("/dashboard", planForm, { authorize: "yes" });
-    assert.match(duplicate, /error=/);
-    assert.equal(providerCalls, 1);
-    assert.equal(state.artifacts.length, 1);
-    console.log(`PASS (offline planning HTTP, ${provider}): consent/session, provider transport, finalizer payload, UI proposals, no secret exposure, duplicate rejection`);
+    if (persistenceFailure) {
+      assert.match(decodeURIComponent(planningResult), /Plan persistence could not be confirmed/);
+      assert.equal(state.runs[0].status, "running");
+      assert.equal(state.artifacts.length, 0);
+      const events = logs.split("\n").filter((line) => line.startsWith("agent_city.planning ")).map((line) => JSON.parse(line.slice("agent_city.planning ".length)));
+      assert.ok(events.some((e) => e.stage === "generation" && e.outcome === "succeeded" && e.runId === planningRid));
+      assert.ok(events.some((e) => e.stage === "finalize_plan" && e.outcome === "failed" && e.code === "23514" && e.httpStatus === 400 && e.runId === planningRid));
+      const diagnosticText = JSON.stringify(events);
+      assert.doesNotMatch(diagnosticText, /private-plan-sensitive-marker|Offline fixture plan|offline-gemini-fixture|sb_secret_m11_fixture/);
+      assert.ok(!diagnosticText.includes(planningHash));
+      html = await (await request("/dashboard")).text();
+      assert.doesNotMatch(html, /Offline fixture plan|private-plan-sensitive-marker/);
+      const recoverForm = forms(html).find((f) => f.includes("Recover interrupted plan"));
+      assert.match(await submit("/dashboard", recoverForm), /error=/); // Active lease cannot be recovered.
+      state.runs[0].expires_at = new Date(Date.now()-1000).toISOString();
+      assert.equal(await submit("/dashboard", recoverForm), "/dashboard");
+      assert.equal(state.runs[0].status, "failed");
+      assert.equal(providerCalls, 1);
+      assert.equal(calls.filter((c) => c.path.endsWith("finish_chief_plan")).length, 1);
+      html = await (await request("/dashboard")).text();
+      assert.ok(forms(html).some((f) => f.includes('name="authorize"'))); // Fresh consent required; no automatic retry.
+      console.log("PASS (offline persistence failure): exact production message, sanitized SQLSTATE/stage, no artifact/retry, lease expiry and owner recovery");
+    } else {
+      assert.equal(planningResult, "/dashboard");
+      assert.equal(providerCalls, 1);
+      html = await (await request("/dashboard")).text();
+      assert.match(html, /Offline fixture plan/);
+      assert.match(html, /Review fixture evidence/);
+      assert.match(html, /Human-reviewed fixture report/);
+      assert.match(html, /human review required/);
+      assert.match(html, /not executable/);
+      assert.doesNotMatch(html, /offline-openai-fixture|offline-gemini-fixture|sb_secret_m11_fixture/);
+      assert.doesNotMatch(html, new RegExp(planningHash));
+      const duplicate = await submit("/dashboard", planForm, { authorize: "yes" });
+      assert.match(duplicate, /error=/);
+      assert.equal(providerCalls, 1);
+      assert.equal(state.artifacts.length, 1);
+      console.log(`PASS (offline planning HTTP, ${provider}): consent/session, provider transport, finalizer payload, UI proposals, no secret exposure, duplicate rejection`);
+    }
   }
   const cookieName = [...jar.keys()].find((k) => k.endsWith("-auth-token"));
   assert.ok(cookieName, "SSR session cookie");
