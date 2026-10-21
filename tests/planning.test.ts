@@ -2,11 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import OpenAI from "openai";
 import { planSchema, type Plan } from "@agent-city/core";
-import { executePlanning, generatePlan, planningConfig, PlanningFailure, type PlanningDependencies } from "../apps/web/lib/planning-engine";
+import { executePlanning, generateOpenAIPlan as generatePlan, planningConfig, PlanningFailure, type PlanningDependencies } from "../apps/web/lib/planning-engine";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const plan: Plan = { summary: "Review a safe plan", tasks: [{ title: "Research", suggested_agent_role: "researcher", expected_deliverable: "Evidence for human review" }], risks: ["Unverified evidence"] };
-const env = { AGENT_CITY_MODE: "supabase", AGENT_CITY_AI_PLANNING_ENABLED: "true", OPENAI_API_KEY: "offline-fixture", SUPABASE_SERVICE_ROLE_KEY: "offline-fixture" };
+const env = { AGENT_CITY_AI_PROVIDER: "openai", AGENT_CITY_MODE: "supabase", AGENT_CITY_AI_PLANNING_ENABLED: "true", OPENAI_API_KEY: "offline-fixture", SUPABASE_SERVICE_ROLE_KEY: "offline-fixture" };
 function dependencies() {
   const calls: string[] = [];
   const deps: PlanningDependencies = {

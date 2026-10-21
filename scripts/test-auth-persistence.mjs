@@ -7,6 +7,8 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 const planningTest = process.argv.includes("--planning");
+const provider = process.argv.includes("--openai") ? "openai" : "gemini";
+const planningModel = provider === "gemini" ? "gemini-flash-latest" : "gpt-4.1-mini";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const uid = "11111111-1111-4111-8111-111111111111",
   wid = "22222222-2222-4222-8222-222222222222",
@@ -81,12 +83,23 @@ const fixture = createServer(async (req, res) => {
     }
     if (url.pathname === "/openai-fixture") {
       assert.ok(planningTest);
+      assert.equal(provider, "openai");
       assert.equal(req.headers.authorization, "Bearer offline-openai-fixture");
       providerCalls++;
       assert.equal(body.model, "gpt-4.1-mini");
       assert.equal(body.response_format.type, "json_schema");
       assert.equal(body.tools, undefined);
       return send(200, { choices: [{ finish_reason: "stop", message: { content: JSON.stringify(offlinePlan), refusal: null } }] });
+    }
+    if (url.pathname === "/gemini-fixture") {
+      assert.ok(planningTest);
+      assert.equal(provider, "gemini");
+      assert.equal(req.headers["x-goog-api-key"], "offline-gemini-fixture");
+      assert.equal(body.generationConfig.responseMimeType, "application/json");
+      assert.equal(body.generationConfig.maxOutputTokens, 6000);
+      assert.equal(body.tools, undefined);
+      providerCalls++;
+      return send(200, { candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(offlinePlan) }] } }] });
     }
     if (url.pathname === "/rest/v1/rpc/finish_chief_plan") {
       assert.ok(planningTest);
@@ -141,9 +154,10 @@ const fixture = createServer(async (req, res) => {
       }
       if (rpc === "begin_chief_plan") {
         assert.ok(planningTest);
-        assert.deepEqual(Object.keys(body).sort(), ["mid", "selected_model", "token_hash"]);
+        assert.deepEqual(Object.keys(body).sort(), ["mid", "selected_model", "selected_provider", "token_hash"]);
         assert.equal(body.mid, planningMid);
-        assert.equal(body.selected_model, "gpt-4.1-mini");
+        assert.equal(body.selected_model, planningModel);
+        assert.equal(body.selected_provider, provider);
         assert.match(body.token_hash, /^[a-f0-9]{64}$/);
         planningHash = body.token_hash;
         const m = state.missions.find((m) => m.id === planningMid);
@@ -232,6 +246,9 @@ const app = spawn(
       ...process.env,
       AGENT_CITY_MODE: "supabase",
       AGENT_CITY_AI_PLANNING_ENABLED: planningTest ? "true" : "false",
+      AGENT_CITY_AI_PROVIDER: provider,
+      GEMINI_API_KEY: "offline-gemini-fixture",
+      GEMINI_MODEL: "gemini-flash-latest",
       OPENAI_API_KEY: "offline-openai-fixture",
       OPENAI_MODEL: "gpt-4.1-mini",
       SUPABASE_SERVICE_ROLE_KEY: "sb_secret_m11_fixture",
@@ -405,13 +422,13 @@ try {
     assert.match(html, /Human-reviewed fixture report/);
     assert.match(html, /human review required/);
     assert.match(html, /not executable/);
-    assert.doesNotMatch(html, /offline-openai-fixture|sb_secret_m11_fixture/);
+    assert.doesNotMatch(html, /offline-openai-fixture|offline-gemini-fixture|sb_secret_m11_fixture/);
     assert.doesNotMatch(html, new RegExp(planningHash));
     const duplicate = await submit("/dashboard", planForm, { authorize: "yes" });
     assert.match(duplicate, /error=/);
     assert.equal(providerCalls, 1);
     assert.equal(state.artifacts.length, 1);
-    console.log("PASS (offline M1.1 HTTP): explicit consent/session, official SDK fixture, privileged finalizer payload, persisted UI proposals, no secret exposure, duplicate rejection before provider");
+    console.log(`PASS (offline planning HTTP, ${provider}): consent/session, provider transport, finalizer payload, UI proposals, no secret exposure, duplicate rejection`);
   }
   const cookieName = [...jar.keys()].find((k) => k.endsWith("-auth-token"));
   assert.ok(cookieName, "SSR session cookie");

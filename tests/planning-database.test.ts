@@ -23,7 +23,27 @@ test("M1.1 PostgreSQL authorization, atomic persistence, retries and isolation",
       alter table storage.objects enable row level security; grant usage on schema storage to authenticated; grant select on storage.objects to authenticated;
       create function storage.foldername(text) returns text[] language sql immutable as $$ select (string_to_array($1,'/'))[1:array_length(string_to_array($1,'/'),1)-1] $$;
       alter default privileges grant execute on functions to anon, authenticated;`);
-    for (const file of readdirSync("supabase/migrations").sort()) await db.exec(readFileSync(`supabase/migrations/${file}`, "utf8"));
+    const migration = "supabase/migrations/20261021140000_multi_provider_planning.sql";
+    for (const file of readdirSync("supabase/migrations").sort().filter((name) => !name.includes("multi_provider")))
+      await db.exec(readFileSync(`supabase/migrations/${file}`, "utf8"));
+    await t.test("populated M1.1 upgrade preserves an in-flight OpenAI run and its finalizer", async () => {
+      await db.exec("begin");
+      try {
+        await db.query("insert into auth.users values($1)", [owner]);
+        await db.query("select set_config('request.jwt.claim.sub',$1,true)", [owner]);
+        await db.exec("set local role authenticated");
+        const wid = (await db.query<{id: string}>("select public.create_workspace('Before M1.2') as id")).rows[0].id;
+        const mid = (await db.query<{id: string}>("select public.create_mission($1,'Existing AI mission','Preserve a live planning lease','business') as id", [wid])).rows[0].id;
+        const claim = (await db.query<{claim: {runId: string}}>("select public.begin_chief_plan($1,$2,'gpt-4.1-mini') as claim", [mid, hash])).rows[0].claim;
+        await db.exec("reset role");
+        await db.exec(readFileSync(migration, "utf8"));
+        await db.exec("set local role service_role");
+        await db.query("select public.finish_chief_plan($1,$2,$3::jsonb,null)", [claim.runId, hash, JSON.stringify(plan)]);
+        await db.exec("reset role");
+        assert.equal((await db.query<{status: string}>("select status from public.runs where id=$1", [claim.runId])).rows[0].status, "completed");
+      } finally { await db.exec("rollback"); }
+    });
+    await db.exec(readFileSync(migration, "utf8"));
     await db.query("insert into auth.users values($1),($2),($3)", [owner, member, outsider]);
     async function asUser(id = owner, role = "authenticated") {
       await db.exec("reset role");
@@ -162,11 +182,50 @@ test("M1.1 PostgreSQL authorization, atomic persistence, retries and isolation",
       await db.query("update public.workspace_members set role='owner' where workspace_id=$1 and user_id=$2", [wid, owner]);
       await asUser();
     });
+    await t.test("Gemini uses the same owner/lease/finalizer protections and records provider metadata", async () => {
+      await asUser();
+      const gemini = await mission();
+      await asUser(member);
+      await assert.rejects(db.query("select public.begin_chief_plan($1,$2,'gemini-flash-latest','gemini')", [gemini, hash]), /owner authorization/);
+      await asUser();
+      await assert.rejects(db.query("select public.begin_chief_plan($1,$2,'fixture','invalid')", [gemini, hash]), /Invalid AI provider/);
+      const claim = await scalar<{runId: string}>("select public.begin_chief_plan($1,$2,'gemini-flash-latest','gemini')", [gemini, hash]);
+      assert.equal(await scalar("select adapter from public.runs where id=$1", [claim.runId]), "gemini");
+      assert.equal(await scalar("select model from public.runs where id=$1", [claim.runId]), "gemini-flash-latest");
+      await assert.rejects(db.query("select public.finish_chief_plan($1,$2,$3::jsonb,null)", [claim.runId, hash, JSON.stringify(plan)]), /permission denied/);
+      await assert.rejects(db.query("select public.transition_mission($1,'complete')", [gemini]), /cannot use mock/);
+      await assert.rejects(finish(claim.runId, plan, null, "b".repeat(64)), /lease/);
+      await finish(claim.runId);
+      await assert.rejects(finish(claim.runId), /lease/);
+      await asUser();
+      assert.equal(await scalar("select status from public.missions where id=$1", [gemini]), "awaiting_approval");
+      assert.equal(await scalar<number>("select count(*)::int from public.tasks where plan_run_id=$1 and status='proposed'", [claim.runId]), 2);
+    });
+    await t.test("attempt budget is shared across Gemini and legacy OpenAI entry points", async () => {
+      const mixed = await mission();
+      for (const provider of ["gemini", "openai", "gemini"]) {
+        const claim = await scalar<{runId: string}>("select public.begin_chief_plan($1,$2,'fixture',$3)", [mixed, hash, provider]);
+        await finish(claim.runId, null, "provider_error"); await asUser();
+      }
+      await assert.rejects(begin(mixed), /Maximum 3/); // Legacy three-argument RPC cannot bypass the budget.
+      await assert.rejects(db.query("select public.begin_chief_plan($1,$2,'fixture','gemini')", [mixed, hash]), /Maximum 3/);
+    });
+    await t.test("Gemini interrupted run recovery also fences stale finalizers", async () => {
+      const interrupted = await mission();
+      const claim = await scalar<{runId: string}>("select public.begin_chief_plan($1,$2,'fixture','gemini')", [interrupted, hash]);
+      await assert.rejects(db.query("select public.recover_chief_plan($1)", [interrupted]), /not expired/);
+      await db.exec("reset role");
+      await db.query("update public.runs set expires_at=clock_timestamp()-interval '1 second' where id=$1", [claim.runId]);
+      await asUser(); await db.query("select public.recover_chief_plan($1)", [interrupted]);
+      await assert.rejects(finish(claim.runId), /lease/); await asUser();
+      const next = await begin(interrupted); // Explicit provider switch only after recovery/consent.
+      await finish(next.runId); await asUser();
+    });
     await t.test("application orchestration and PostgreSQL combine to reject duplicate calls before provider", async () => {
       const integrated = await mission();
       let modelCalls = 0;
       const deps: PlanningDependencies = {
-        config: () => planningConfig({ AGENT_CITY_MODE: "supabase", AGENT_CITY_AI_PLANNING_ENABLED: "true", OPENAI_API_KEY: "fixture", SUPABASE_SERVICE_ROLE_KEY: "fixture" }),
+        config: () => planningConfig({ AGENT_CITY_AI_PROVIDER: "openai", AGENT_CITY_MODE: "supabase", AGENT_CITY_AI_PLANNING_ENABLED: "true", OPENAI_API_KEY: "fixture", SUPABASE_SERVICE_ROLE_KEY: "fixture" }),
         authenticate: async () => { await asUser(); },
         capability: () => ({ hash }),
         claim: async (id) => begin(id),
