@@ -1,0 +1,181 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { PGlite } from "@electric-sql/pglite";
+import { executePlanning, planningConfig, type PlanningDependencies } from "../apps/web/lib/planning-engine";
+import type { Plan } from "@agent-city/core";
+const owner = "11111111-1111-4111-8111-111111111111", member = "22222222-2222-4222-8222-222222222222", outsider = "33333333-3333-4333-8333-333333333333";
+const hash = "a".repeat(64);
+const plan: Plan = { summary: "Human review required", tasks: [
+  { title: "First proposal", suggested_agent_role: "researcher", expected_deliverable: "Evidence summary" },
+  { title: "Second proposal", suggested_agent_role: "developer", expected_deliverable: "Reviewed design" },
+], risks: ["Scope needs review"] };
+
+test("M1.1 PostgreSQL authorization, atomic persistence, retries and isolation", async (t) => {
+  const db = new PGlite();
+  try {
+    await db.exec(`create role anon; create role authenticated; create role service_role;
+      create schema auth; create table auth.users(id uuid primary key);
+      create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+      grant usage on schema auth to authenticated; grant execute on function auth.uid() to authenticated;
+      create schema storage; create table storage.buckets(id text primary key,name text,public boolean);
+      create table storage.objects(id uuid default gen_random_uuid(),bucket_id text,name text);
+      alter table storage.objects enable row level security; grant usage on schema storage to authenticated; grant select on storage.objects to authenticated;
+      create function storage.foldername(text) returns text[] language sql immutable as $$ select (string_to_array($1,'/'))[1:array_length(string_to_array($1,'/'),1)-1] $$;
+      alter default privileges grant execute on functions to anon, authenticated;`);
+    for (const file of readdirSync("supabase/migrations").sort()) await db.exec(readFileSync(`supabase/migrations/${file}`, "utf8"));
+    await db.query("insert into auth.users values($1),($2),($3)", [owner, member, outsider]);
+    async function asUser(id = owner, role = "authenticated") {
+      await db.exec("reset role");
+      await db.query("select set_config('request.jwt.claim.sub',$1,false)", [id]);
+      await db.exec(`set role ${role}`);
+    }
+    async function scalar<T = string>(sql: string, params: unknown[] = []): Promise<T> {
+      const result = await db.query<Record<string, T>>(sql, params);
+      return Object.values(result.rows[0])[0];
+    }
+    await asUser();
+    const wid = await scalar("select public.create_workspace('Planning tests')");
+    await db.exec("reset role");
+    await db.query("insert into public.workspace_members values($1,$2,'member')", [wid, member]);
+    await asUser();
+    const mission = () => scalar("select public.create_mission($1,'Planning mission','Produce a supervised reviewable plan','business')", [wid]);
+    const begin = (mid: string) => scalar<{runId: string; title: string; objective: string}>("select public.begin_chief_plan($1,$2,'gpt-4.1-mini')", [mid, hash]);
+    async function finish(rid: string, content: unknown = plan, error: string | null = null, capability = hash) {
+      await asUser("", "service_role");
+      await db.query("select public.finish_chief_plan($1,$2,$3::jsonb,$4)", [rid, capability, content === null ? null : JSON.stringify(content), error]);
+    }
+    const mid = await mission();
+    await t.test("anonymous, nonmember and member cannot authorize planning", async () => {
+      for (const uid of ["", outsider, member]) {
+        await asUser(uid);
+        await assert.rejects(begin(mid), /owner authorization/);
+      }
+      await asUser("", "anon");
+      await assert.rejects(begin(mid), /permission denied/);
+      await asUser();
+      assert.equal(await scalar<number>("select count(*)::int from public.runs"), 0);
+    });
+    let rid: string;
+    await t.test("owner claim binds approval, model, actor and lease atomically", async () => {
+      rid = (await begin(mid)).runId;
+      assert.equal(await scalar("select execution_mode from public.missions where id=$1", [mid]), "chief_of_staff");
+      const result = await db.query("select scope,status,decided_by from public.approvals where mission_id=$1", [mid]);
+      assert.deepEqual(result.rows[0], { scope: "chief_of_staff_plan", status: "approved", decided_by: owner });
+      assert.equal(await scalar("select requested_by from public.runs where id=$1", [rid]), owner);
+    });
+    await t.test("duplicate starts and mock transitions cannot touch an AI mission", async () => {
+      await assert.rejects(begin(mid), /not eligible/);
+      for (const action of ["submit", "approve", "reject", "start", "complete", "fail", "cancel"])
+        await assert.rejects(db.query("select public.transition_mission($1,$2)", [mid, action]), /cannot use mock/);
+      await assert.rejects(db.query("select private.transition_mock_mission($1,'complete')", [mid]), /permission denied/);
+      assert.equal(await scalar<number>("select count(*)::int from public.runs where mission_id=$1", [mid]), 1);
+    });
+    await t.test("client finalization and direct table forgery are denied", async () => {
+      await assert.rejects(db.query("select public.finish_chief_plan($1,$2,$3::jsonb,null)", [rid!, hash, JSON.stringify(plan)]), /permission denied/);
+      for (const table of ["missions", "runs", "approvals", "tasks", "artifacts"])
+        await assert.rejects(db.exec(`delete from public.${table}`), /permission denied/);
+      const acl = await db.query<{proname: string; client: boolean; anon: boolean}>(`select p.proname,has_function_privilege('authenticated',p.oid,'execute') as client,has_function_privilege('anon',p.oid,'execute') as anon from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname in ('public','private') and p.proname in ('finish_chief_plan','validate_chief_plan','transition_mock_mission')`);
+      assert.equal(acl.rows.length, 4);
+      for (const row of acl.rows) { assert.equal(row.client, false, row.proname); assert.equal(row.anon, false, row.proname); }
+    });
+    await t.test("capability mismatch and invalid plan cannot partially persist", async () => {
+      await assert.rejects(finish(rid!, plan, null, "b".repeat(64)), /lease/);
+      for (const bad of [
+        { ...plan, summary: "" }, { ...plan, tasks: [] }, { ...plan, tasks: Array(13).fill(plan.tasks[0]) },
+        { ...plan, risks: Array(11).fill("risk") }, { ...plan, extra: true },
+        { ...plan, tasks: [{ ...plan.tasks[0], suggested_agent_role: null }] },
+        { ...plan, tasks: [{ ...plan.tasks[0], expected_deliverable: "" }] },
+        { ...plan, risks: [null] },
+      ]) await assert.rejects(finish(rid!, bad), /Invalid/);
+      await asUser();
+      assert.equal(await scalar<number>("select count(*)::int from public.artifacts"), 0);
+      assert.equal(await scalar<number>("select count(*)::int from public.tasks"), 0);
+      assert.equal(await scalar("select status from public.runs where id=$1", [rid!]), "running");
+    });
+    await t.test("finalization atomically persists ordered non-executable proposals and artifact", async () => {
+      await finish(rid!);
+      await assert.rejects(finish(rid!), /lease/);
+      await asUser();
+      assert.deepEqual(await scalar("select content from public.artifacts where run_id=$1", [rid!]), plan);
+      const tasks = await db.query("select title,status,agent_id,proposal_position from public.tasks order by proposal_position");
+      assert.deepEqual(tasks.rows, plan.tasks.map((task, i) => ({ title: task.title, status: "proposed", agent_id: null, proposal_position: i+1 })));
+      assert.equal(await scalar("select status from public.missions where id=$1", [mid]), "awaiting_approval");
+      assert.equal(await scalar("select actor_id from public.activity_events where event='chief_of_staff.plan_review_required'"), owner);
+      await assert.rejects(begin(mid), /not eligible/);
+      await assert.rejects(db.query("select public.transition_mission($1,'approve')", [mid]), /cannot use mock/);
+    });
+    await t.test("workspace RLS hides plans, tasks and runs from outsiders", async () => {
+      await asUser(outsider);
+      for (const table of ["tasks", "runs", "artifacts", "approvals", "missions", "activity_events"])
+        assert.equal(await scalar<number>(`select count(*)::int from public.${table}`), 0, table);
+      await asUser(member);
+      assert.equal(await scalar<number>("select count(*)::int from public.tasks"), 2);
+      await asUser();
+    });
+    await t.test("mock approval is not AI authorization and mock remains usable", async () => {
+      const mock = await mission();
+      await db.query("select public.transition_mission($1,'submit')", [mock]);
+      await db.query("select public.transition_mission($1,'approve')", [mock]);
+      await assert.rejects(begin(mock), /not eligible/);
+      await db.query("select public.transition_mission($1,'start')", [mock]);
+      await db.query("select public.transition_mission($1,'complete')", [mock]);
+      assert.equal(await scalar("select adapter from public.runs where mission_id=$1", [mock]), "mock");
+    });
+    await t.test("timeout, invalid-output and provider failures consume a bounded total of 3 attempts", async () => {
+      const retry = await mission();
+      for (const code of ["timeout", "invalid_output", "provider_error"]) {
+        const claim = await begin(retry);
+        await finish(claim.runId, null, code);
+        await asUser();
+        assert.equal(await scalar("select status from public.missions where id=$1", [retry]), "failed");
+      }
+      await assert.rejects(begin(retry), /Maximum 3/);
+      assert.equal(await scalar<number>("select count(*)::int from public.artifacts where mission_id=$1", [retry]), 0);
+    });
+    await t.test("interrupted runs require expiry, owner recovery and fresh authorization", async () => {
+      const interrupted = await mission();
+      const claim = await begin(interrupted);
+      await assert.rejects(db.query("select public.recover_chief_plan($1)", [interrupted]), /not expired/);
+      await asUser(member);
+      await assert.rejects(db.query("select public.recover_chief_plan($1)", [interrupted]), /owner authorization/);
+      await db.exec("reset role");
+      await db.query("update public.runs set expires_at=clock_timestamp()-interval '1 second' where id=$1", [claim.runId]);
+      await assert.rejects(finish(claim.runId), /expired/);
+      await asUser();
+      await db.query("select public.recover_chief_plan($1)", [interrupted]);
+      await assert.rejects(finish(claim.runId), /lease/);
+      await asUser();
+      assert.equal(await scalar("select failure_code from public.runs where id=$1", [claim.runId]), "interrupted");
+      const fresh = await begin(interrupted);
+      assert.notEqual(fresh.runId, claim.runId);
+      await finish(fresh.runId);
+      await asUser();
+    });
+    await t.test("owner revocation after claim prevents finalization", async () => {
+      const revoked = await mission();
+      const claim = await begin(revoked);
+      await db.exec("reset role");
+      await db.query("update public.workspace_members set role='member' where workspace_id=$1 and user_id=$2", [wid, owner]);
+      await assert.rejects(finish(claim.runId), /no longer valid/);
+      await db.exec("reset role");
+      await db.query("update public.workspace_members set role='owner' where workspace_id=$1 and user_id=$2", [wid, owner]);
+      await asUser();
+    });
+    await t.test("application orchestration and PostgreSQL combine to reject duplicate calls before provider", async () => {
+      const integrated = await mission();
+      let modelCalls = 0;
+      const deps: PlanningDependencies = {
+        config: () => planningConfig({ AGENT_CITY_MODE: "supabase", AGENT_CITY_AI_PLANNING_ENABLED: "true", OPENAI_API_KEY: "fixture", SUPABASE_SERVICE_ROLE_KEY: "fixture" }),
+        authenticate: async () => { await asUser(); },
+        capability: () => ({ hash }),
+        claim: async (id) => begin(id),
+        generate: async () => { modelCalls++; await assert.rejects(begin(integrated)); return plan; },
+        finish: async (rid, _hash, plan, error) => finish(rid, plan, error),
+      };
+      await executePlanning(integrated, true, deps);
+      await assert.rejects(executePlanning(integrated, true, deps));
+      assert.equal(modelCalls, 1);
+    });
+  } finally { await db.close(); }
+});

@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+const planningTest = process.argv.includes("--planning");
 const root = fileURLToPath(new URL("../", import.meta.url));
 const uid = "11111111-1111-4111-8111-111111111111",
   wid = "22222222-2222-4222-8222-222222222222",
@@ -28,6 +29,12 @@ const state = {
   activity_events: [],
 };
 const calls = [];
+const planningMid = "55555555-5555-4555-8555-555555555555";
+const planningRid = "66666666-6666-4666-8666-666666666666";
+const offlinePlan = { summary: "Offline fixture plan", tasks: [{ title: "Review fixture evidence", suggested_agent_role: "researcher", expected_deliverable: "Human-reviewed fixture report" }], risks: ["Fixture evidence only"] };
+let providerCalls = 0;
+let planningHash;
+if (planningTest) { state.artifacts = []; state.runs = []; }
 let refreshes = 0,
   logouts = 0,
   serial = 0,
@@ -72,6 +79,25 @@ const fixture = createServer(async (req, res) => {
       refreshes++;
       return send(200, session());
     }
+    if (url.pathname === "/openai-fixture") {
+      assert.ok(planningTest);
+      assert.equal(req.headers.authorization, "Bearer offline-openai-fixture");
+      providerCalls++;
+      assert.equal(body.model, "gpt-4.1-mini");
+      assert.equal(body.response_format.type, "json_schema");
+      assert.equal(body.tools, undefined);
+      return send(200, { choices: [{ finish_reason: "stop", message: { content: JSON.stringify(offlinePlan), refusal: null } }] });
+    }
+    if (url.pathname === "/rest/v1/rpc/finish_chief_plan") {
+      assert.ok(planningTest);
+      assert.equal(req.headers.authorization, "Bearer sb_secret_m11_fixture");
+      assert.deepEqual(body, { rid: planningRid, token_hash: planningHash, plan: offlinePlan, error_code: null });
+      assert.ok(!Object.hasOwn(body, "actor_id"));
+      state.runs[0].status = "completed";
+      state.missions.find((m) => m.id === planningMid).status = "awaiting_approval";
+      state.artifacts.push({ id: "fixture-plan", mission_id: planningMid, kind: "chief_of_staff_plan", content: offlinePlan });
+      return send(200, null);
+    }
     if (req.headers.authorization !== `Bearer ${activeToken}` || !activeToken)
       return send(401, { code: "42501", message: "Authentication required" });
     if (url.pathname === "/auth/v1/user") return send(200, user);
@@ -112,6 +138,20 @@ const fixture = createServer(async (req, res) => {
           created_at: new Date().toISOString(),
         });
         return send(200, mid);
+      }
+      if (rpc === "begin_chief_plan") {
+        assert.ok(planningTest);
+        assert.deepEqual(Object.keys(body).sort(), ["mid", "selected_model", "token_hash"]);
+        assert.equal(body.mid, planningMid);
+        assert.equal(body.selected_model, "gpt-4.1-mini");
+        assert.match(body.token_hash, /^[a-f0-9]{64}$/);
+        planningHash = body.token_hash;
+        const m = state.missions.find((m) => m.id === planningMid);
+        if (m.status !== "draft") return send(400, { message: "Mission not eligible for planning" });
+        m.status = "running";
+        m.execution_mode = "chief_of_staff";
+        state.runs.push({ id: planningRid, mission_id: planningMid, status: "running", failure_code: null, expires_at: new Date(Date.now()+120000).toISOString() });
+        return send(200, { runId: planningRid, title: m.title, objective: m.objective });
       }
       assert.equal(rpc, "transition_mission");
       assert.equal(body.mid, mid);
@@ -178,6 +218,7 @@ const jar = new Map();
 const app = spawn(
   process.execPath,
   [
+    ...(planningTest ? ["--import", root + "tests/fixtures/openai-offline.mjs"] : []),
     root + "node_modules/next/dist/bin/next",
     "dev",
     "--hostname",
@@ -190,6 +231,11 @@ const app = spawn(
     env: {
       ...process.env,
       AGENT_CITY_MODE: "supabase",
+      AGENT_CITY_AI_PLANNING_ENABLED: planningTest ? "true" : "false",
+      OPENAI_API_KEY: "offline-openai-fixture",
+      OPENAI_MODEL: "gpt-4.1-mini",
+      SUPABASE_SERVICE_ROLE_KEY: "sb_secret_m11_fixture",
+      AGENT_CITY_TEST_OPENAI_URL: supabaseURL,
       SUPABASE_URL: supabaseURL,
       SUPABASE_PUBLISHABLE_KEY: "sb_publishable_m04_fixture_only",
       SUPABASE_PROJECT_REF: "fixture",
@@ -335,6 +381,38 @@ try {
   console.log(
     "PASS (local HTTP fixture): exact RPC routes/payloads, persisted dashboard reads, approved mock lifecycle and activity",
   );
+  if (planningTest) {
+    state.missions.push({ id: planningMid, workspace_id: wid, title: "M1.1 offline planning mission", objective: "Prepare proposals without executing any work.", kind: "business", status: "draft", execution_mode: "mock", created_by: uid, created_at: new Date().toISOString() });
+    html = await (await request("/dashboard")).text();
+    const planForm = forms(html).find((f) => f.includes('name="authorize"'));
+    assert.ok(planForm);
+    const before = calls.filter((c) => c.path.endsWith("begin_chief_plan")).length;
+    const denied = await submit("/dashboard", planForm, { authorize: "" });
+    assert.match(denied, /error=/);
+    assert.equal(calls.filter((c) => c.path.endsWith("begin_chief_plan")).length, before);
+    assert.equal(providerCalls, 0);
+    const savedJar = new Map(jar);
+    jar.clear();
+    const unauthenticated = await submit("/dashboard", planForm, { authorize: "yes" });
+    assert.match(unauthenticated, /login/);
+    for (const [k,v] of savedJar) jar.set(k,v);
+    assert.equal(providerCalls, 0);
+    assert.equal(await submit("/dashboard", planForm, { authorize: "yes" }), "/dashboard");
+    assert.equal(providerCalls, 1);
+    html = await (await request("/dashboard")).text();
+    assert.match(html, /Offline fixture plan/);
+    assert.match(html, /Review fixture evidence/);
+    assert.match(html, /Human-reviewed fixture report/);
+    assert.match(html, /human review required/);
+    assert.match(html, /not executable/);
+    assert.doesNotMatch(html, /offline-openai-fixture|sb_secret_m11_fixture/);
+    assert.doesNotMatch(html, new RegExp(planningHash));
+    const duplicate = await submit("/dashboard", planForm, { authorize: "yes" });
+    assert.match(duplicate, /error=/);
+    assert.equal(providerCalls, 1);
+    assert.equal(state.artifacts.length, 1);
+    console.log("PASS (offline M1.1 HTTP): explicit consent/session, official SDK fixture, privileged finalizer payload, persisted UI proposals, no secret exposure, duplicate rejection before provider");
+  }
   const cookieName = [...jar.keys()].find((k) => k.endsWith("-auth-token"));
   assert.ok(cookieName, "SSR session cookie");
   const current = jar.get(cookieName);

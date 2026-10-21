@@ -46,6 +46,7 @@ export async function snapshot(user: string) {
           objective: x.objective,
           kind: x.kind,
           status: x.status,
+          executionMode: x.execution_mode ?? "mock",
           createdBy: x.created_by,
           createdAt: x.created_at,
         }) as Mission,

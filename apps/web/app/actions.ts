@@ -8,6 +8,7 @@ import { localToken, requireUser } from "@/lib/auth";
 import { mode } from "@/lib/config";
 import { supabase } from "@/lib/supabase";
 import { createMission, createWorkspace, transition } from "@/lib/repository";
+import { planMission, recoverPlan } from "@/lib/planning";
 export async function login(form: FormData) {
   if (mode() === "mock") {
     (await cookies()).set("city-local", localToken(), {
@@ -84,4 +85,14 @@ export async function newWorkspace(form: FormData) {
       z.string().trim().min(2).max(80).parse(form.get("name")),
     );
   });
+}
+export async function generateChiefPlan(form: FormData) {
+  await requireUser();
+  await mutation(async () => {
+    await planMission(z.uuid().parse(form.get("id")), form.get("authorize") === "yes");
+  });
+}
+export async function recoverChiefPlan(form: FormData) {
+  await requireUser();
+  await mutation(async () => { await recoverPlan(z.uuid().parse(form.get("id"))); });
 }
