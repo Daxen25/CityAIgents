@@ -69,6 +69,14 @@ an isolated local HTTP fixture (`npm run test:auth-persistence`); hosted signed-
 acceptance still requires an existing confirmed account. Stop development servers before
 running that test. It never uses the hosted project or real credentials.
 
+## M1.1 Chief of Staff (opt-in)
+
+Owner-authorized AI planning is disabled by default. See
+[the M1.1 implementation and activation guide](docs/m1.1-chief-of-staff.md) for the
+additive migration, server-only credentials and local offline acceptance tests.
+Plans and tasks are proposals for human review; this milestone cannot execute them.
+No hosted migration, deployment or paid model call is authorized by local setup.
+
 ## Existing hosted Supabase project
 
 Project **atbksxlqgfxvetsgusek** is reachable and its publishable key is accepted.

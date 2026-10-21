@@ -1,8 +1,11 @@
 import { snapshot } from "@/lib/repository";
 import { requireUser } from "@/lib/auth";
 import { nextStatus, type Action } from "@agent-city/core";
-import { newMission, advanceMission, newWorkspace } from "../actions";
+import { newMission, advanceMission, newWorkspace, generateChiefPlan, recoverChiefPlan } from "../actions";
+import { missionPlans, planningEnabled } from "@/lib/planning";
+import { MissionPlan } from "@/components/mission-plan";
 import { Button } from "@/components/ui/button";
+export const maxDuration = 60;
 export default async function Dashboard({
   searchParams,
 }: {
@@ -10,6 +13,8 @@ export default async function Dashboard({
 }) {
   const user = await requireUser();
   const data = await snapshot(user);
+  const planning = await missionPlans(data.missions.some((m) => m.executionMode === "chief_of_staff"));
+  const aiEnabled = planningEnabled();
   const { error } = await searchParams;
   return (
     <>
@@ -22,7 +27,7 @@ export default async function Dashboard({
         </h1>
         <p className="mt-3 text-slate-600">
           Personal and business missions, with a human approval gate before
-          every simulated run.
+          every run. AI plans require separate owner authorization and human review.
         </p>
       </div>
       {error && (
@@ -137,6 +142,7 @@ export default async function Dashboard({
                       ] as [Action, string][]
                     )
                       .filter(([a]) => {
+                        if (m.executionMode === "chief_of_staff") return false;
                         try {
                           nextStatus(
                             m.status,
@@ -169,6 +175,27 @@ export default async function Dashboard({
                         </form>
                       ))}
                   </div>
+                  {aiEnabled && planning.runs.filter((run) => run.mission_id === m.id).length < 3 && (m.status === "draft" || (m.executionMode === "chief_of_staff" && m.status === "failed")) &&
+                    data.members.some((member) => member.workspaceId === m.workspaceId && member.userId === user && member.role === "owner") && (
+                    <form action={generateChiefPlan} className="mt-4 border-t pt-4">
+                      <input type="hidden" name="id" value={m.id} />
+                      <label className="text-sm"><input type="checkbox" name="authorize" value="yes" required />
+                        I authorize one paid model call to plan this mission. Its title and objective will be sent to OpenAI. No tasks will execute.
+                      </label>
+                      <Button variant="outline">Authorize Chief of Staff plan</Button>
+                      <p className="mt-2 text-xs">Maximum 3 attempts; retries require fresh authorization.</p>
+                    </form>
+                  )}
+                  {m.executionMode === "chief_of_staff" && <>
+                    <p className="mt-3 text-sm">Planning attempts: {planning.runs.filter((run) => run.mission_id === m.id).length}/3</p>
+                    {planning.runs.filter((run) => run.mission_id === m.id && run.failure_code).map((run) => <p key={run.id} className="text-sm">Planning failure: {run.failure_code}</p>)}
+                    {m.status === "running" && <form action={recoverChiefPlan} className="mt-3">
+                      <input type="hidden" name="id" value={m.id} />
+                      <p className="text-sm">If interrupted, wait two minutes before recovery. Recovery does not call the model.</p>
+                      <Button variant="outline">Recover interrupted plan</Button>
+                    </form>}
+                    {planning.artifacts.filter((artifact) => artifact.mission_id === m.id).map((artifact) => <MissionPlan key={artifact.id} content={artifact.content} />)}
+                  </>}
                   {m.status === "completed" && (
                     <p className="mt-4 text-sm text-primary">
                       Mock lifecycle completed. No agent work or external

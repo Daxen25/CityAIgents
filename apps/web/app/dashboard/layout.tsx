@@ -30,7 +30,7 @@ export default async function DashboardLayout({
       <div className="border-b border-input bg-muted px-6 py-2 text-center text-sm">
         {mode() === "mock"
           ? "LOCAL MOCK · simulated identity and execution · no external actions"
-          : "SUPABASE · authenticated workspace · mock execution only"}
+          : "SUPABASE · authenticated workspace · human authorization required"}
       </div>
       <main className="mx-auto max-w-7xl px-6 py-10">{children}</main>
     </>

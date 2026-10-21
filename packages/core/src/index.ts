@@ -1,4 +1,5 @@
 import { z } from "zod";
+export { planSchema, type Plan } from "./planning";
 export const statusSchema = z.enum([
   "draft",
   "awaiting_approval",
@@ -28,6 +29,7 @@ export type Action = z.infer<typeof actionSchema>;
 export type MissionInput = z.infer<typeof missionInput>;
 export type Role = "owner" | "member";
 export interface Mission extends MissionInput {
+  executionMode?: "mock" | "chief_of_staff";
   id: string;
   status: Status;
   createdAt: string;
