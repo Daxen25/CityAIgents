@@ -24,7 +24,7 @@ test("M1.1 PostgreSQL authorization, atomic persistence, retries and isolation",
       create function storage.foldername(text) returns text[] language sql immutable as $$ select (string_to_array($1,'/'))[1:array_length(string_to_array($1,'/'),1)-1] $$;
       alter default privileges grant execute on functions to anon, authenticated;`);
     const migration = "supabase/migrations/20261021140000_multi_provider_planning.sql";
-    for (const file of readdirSync("supabase/migrations").sort().filter((name) => !name.includes("multi_provider")))
+    for (const file of readdirSync("supabase/migrations").sort().filter((name) => name < "20261021140000_multi_provider_planning.sql"))
       await db.exec(readFileSync(`supabase/migrations/${file}`, "utf8"));
     await t.test("populated M1.1 upgrade preserves an in-flight OpenAI run and its finalizer", async () => {
       await db.exec("begin");
@@ -44,6 +44,8 @@ test("M1.1 PostgreSQL authorization, atomic persistence, retries and isolation",
       } finally { await db.exec("rollback"); }
     });
     await db.exec(readFileSync(migration, "utf8"));
+    for (const file of readdirSync("supabase/migrations").sort().filter((name) => name > "20261021140000_multi_provider_planning.sql"))
+      await db.exec(readFileSync(`supabase/migrations/${file}`, "utf8"));
     await db.query("insert into auth.users values($1),($2),($3)", [owner, member, outsider]);
     async function asUser(id = owner, role = "authenticated") {
       await db.exec("reset role");

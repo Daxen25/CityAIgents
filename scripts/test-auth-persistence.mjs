@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 const planningTest = process.argv.includes("--planning");
+const orchestrationTest = process.argv.includes("--orchestration");
 const persistenceFailure = process.argv.includes("--persistence-failure");
 const provider = process.argv.includes("--openai") ? "openai" : "gemini";
 const planningModel = provider === "gemini" ? "gemini-flash-latest" : "gpt-4.1-mini";
@@ -34,10 +35,20 @@ const state = {
 const calls = [];
 const planningMid = "55555555-5555-4555-8555-555555555555";
 const planningRid = "66666666-6666-4666-8666-666666666666";
-const offlinePlan = { summary: "Offline fixture plan", tasks: [{ title: "Review fixture evidence", suggested_agent_role: "researcher", expected_deliverable: "Human-reviewed fixture report" }], risks: ["Fixture evidence only"] };
+const offlinePlan = { summary: "Offline fixture plan", tasks: [{ title: "Review fixture evidence", suggested_agent_role: "researcher", expected_deliverable: "Human-reviewed fixture report" }, { title: "Review implementation proposal", suggested_agent_role: "developer", expected_deliverable: "Human-reviewed implementation outline" }], risks: ["Fixture evidence only"] };
 let providerCalls = 0;
 let planningHash;
-if (planningTest) { state.artifacts = []; state.runs = []; }
+if (planningTest || orchestrationTest) {
+  state.artifacts = []; state.runs = []; state.tasks = []; state.task_plan_reviews = []; state.agents = [];
+}
+function persistFixturePlan(missionId, runId) {
+  state.artifacts.push({ id: crypto.randomUUID(), mission_id: missionId, run_id: runId, kind: "chief_of_staff_plan", content: offlinePlan });
+  offlinePlan.tasks.forEach((task,index) => state.tasks.push({
+    id: crypto.randomUUID(), workspace_id: wid, mission_id: missionId, plan_run_id: runId,
+    title: task.title, suggested_agent_role: task.suggested_agent_role, expected_deliverable: task.expected_deliverable,
+    proposal_position: index+1, status: "proposed", agent_id: null, review_id: null,
+  }));
+}
 let refreshes = 0,
   logouts = 0,
   serial = 0,
@@ -110,7 +121,7 @@ const fixture = createServer(async (req, res) => {
       if (persistenceFailure) return send(400, { code: "23514", message: "private-plan-sensitive-marker", details: planningHash, hint: "offline-gemini-fixture" });
       state.runs[0].status = "completed";
       state.missions.find((m) => m.id === planningMid).status = "awaiting_approval";
-      state.artifacts.push({ id: "fixture-plan", mission_id: planningMid, kind: "chief_of_staff_plan", content: offlinePlan });
+      persistFixturePlan(planningMid, planningRid);
       return send(200, null);
     }
     if (req.headers.authorization !== `Bearer ${activeToken}` || !activeToken)
@@ -132,6 +143,8 @@ const fixture = createServer(async (req, res) => {
           user_id: uid,
           role: "owner",
         });
+        if (state.agents) for (const key of ["chief-of-staff","researcher","developer"])
+          state.agents.push({ id: crypto.randomUUID(), workspace_id: wid, definition_key: key, enabled: false });
         return send(200, wid);
       }
       if (rpc === "create_mission") {
@@ -168,6 +181,31 @@ const fixture = createServer(async (req, res) => {
         m.execution_mode = "chief_of_staff";
         state.runs.push({ id: planningRid, mission_id: planningMid, status: "running", failure_code: null, expires_at: new Date(Date.now()+120000).toISOString() });
         return send(200, { runId: planningRid, title: m.title, objective: m.objective });
+      }
+      if (rpc === "review_task_plan") {
+        assert.deepEqual(Object.keys(body).sort(), ["accepted_ids","confirmed","decision","mid","request_id","rid"]);
+        const m = state.missions.find((m) => m.id === body.mid);
+        const member = state.workspace_members.find((x) => x.workspace_id === m?.workspace_id && x.user_id === uid);
+        if (member?.role !== "owner") return send(403, { code: "42501", message: "Owner required" });
+        if (body.confirmed !== true) return send(400, { code: "P0001", message: "Confirmation required" });
+        const previous = state.task_plan_reviews.find((r) => r.mission_id === body.mid);
+        if (previous) {
+          if (previous.request_id === body.request_id && previous.decision === body.decision && JSON.stringify(previous.accepted_task_ids) === JSON.stringify(body.accepted_ids)) return send(200, previous.id);
+          return send(400, { code: "P0001", message: "Already reviewed" });
+        }
+        const tasks = state.tasks.filter((t) => t.mission_id === body.mid && t.plan_run_id === body.rid);
+        if (m.status !== "awaiting_approval" || !tasks.length || (body.decision === "approved" && !body.accepted_ids.length) || (body.decision === "rejected" && body.accepted_ids.length) || body.accepted_ids.some((id) => !tasks.some((t) => t.id === id))) return send(400, { code: "P0001", message: "Invalid plan review" });
+        const review = { id: crypto.randomUUID(), mission_id: m.id, run_id: body.rid, request_id: body.request_id, decision: body.decision, accepted_task_ids: body.accepted_ids, decided_by: uid, decided_at: new Date().toISOString() };
+        state.task_plan_reviews.push(review);
+        for (const task of tasks) {
+          task.status = body.accepted_ids.includes(task.id) ? "approved" : "rejected";
+          task.agent_id = task.status === "approved" ? state.agents.find((a) => a.workspace_id === wid && a.definition_key === task.suggested_agent_role).id : null;
+          task.review_id = review.id;
+          state.activity_events.push({ id: crypto.randomUUID(), workspace_id: wid, mission_id: m.id, actor_id: uid, event: `task.${task.status}:${task.id}`, created_at: review.decided_at });
+        }
+        m.status = body.decision === "approved" ? "approved" : "cancelled";
+        state.activity_events.push({ id: crypto.randomUUID(), workspace_id: wid, mission_id: m.id, actor_id: uid, event: `plan.review.${body.decision}`, created_at: review.decided_at });
+        return send(200, review.id);
       }
       if (rpc === "recover_chief_plan") {
         assert.equal(body.mid, planningMid);
@@ -221,6 +259,8 @@ const fixture = createServer(async (req, res) => {
           description:
             "Definition read from the isolated service, not a static template.",
         },
+        { key: "researcher", version: 1, name: "Fixture Researcher", description: "Review-only researcher" },
+        { key: "developer", version: 1, name: "Fixture Developer", description: "Review-only developer" },
       ]);
     assert.ok(Object.hasOwn(state, table), "Unexpected table " + table);
     return send(200, state[table]);
@@ -257,11 +297,11 @@ const app = spawn(
       AGENT_CITY_MODE: "supabase",
       AGENT_CITY_AI_PLANNING_ENABLED: planningTest ? "true" : "false",
       AGENT_CITY_AI_PROVIDER: provider,
-      GEMINI_API_KEY: "offline-gemini-fixture",
+      GEMINI_API_KEY: orchestrationTest ? "" : "offline-gemini-fixture",
       GEMINI_MODEL: "gemini-flash-latest",
-      OPENAI_API_KEY: "offline-openai-fixture",
+      OPENAI_API_KEY: orchestrationTest ? "" : "offline-openai-fixture",
       OPENAI_MODEL: "gpt-4.1-mini",
-      SUPABASE_SERVICE_ROLE_KEY: "sb_secret_m11_fixture",
+      SUPABASE_SERVICE_ROLE_KEY: orchestrationTest ? "" : "sb_secret_m11_fixture",
       AGENT_CITY_TEST_OPENAI_URL: supabaseURL,
       SUPABASE_URL: supabaseURL,
       SUPABASE_PUBLISHABLE_KEY: "sb_publishable_m04_fixture_only",
@@ -308,9 +348,12 @@ async function submit(path, form, extra = {}) {
   const body = new FormData();
   for (const match of form.matchAll(/<input\b[^>]*>/g)) {
     const name = match[0].match(/name="([^"]+)"/)?.[1];
-    if (name) body.set(name, match[0].match(/value="([^"]*)"/)?.[1] ?? "");
+    if (name && !match[0].includes('type="checkbox"')) body.set(name, match[0].match(/value="([^"]*)"/)?.[1] ?? "");
   }
-  for (const [k, v] of Object.entries(extra)) body.set(k, v);
+  for (const [k,v] of Object.entries(extra)) {
+    body.delete(k);
+    for (const value of Array.isArray(v) ? v : [v]) body.append(k,value);
+  }
   const response = await request(path, { method: "POST", body });
   assert.equal(response.status, 303, "Server action redirect");
   return response.headers.get("location");
@@ -465,6 +508,52 @@ try {
       assert.equal(state.artifacts.length, 1);
       console.log(`PASS (offline planning HTTP, ${provider}): consent/session, provider transport, finalizer payload, UI proposals, no secret exposure, duplicate rejection`);
     }
+  }
+  if (orchestrationTest) {
+    function seedReview(mid, rid) {
+      state.missions.push({ id: mid, workspace_id: wid, title: "M1.3 review mission", objective: "Review existing proposals without any AI call.", kind: "business", status: "awaiting_approval", execution_mode: "chief_of_staff", created_by: uid, created_at: new Date().toISOString() });
+      state.runs.push({ id: rid, mission_id: mid, status: "completed", failure_code: null });
+      persistFixturePlan(mid,rid);
+    }
+    seedReview(planningMid,planningRid);
+    html = await (await request("/dashboard")).text();
+    assert.match(html, /AI mission/); assert.match(html, /Mock mission/);
+    assert.match(html, /Review implementation proposal/);
+    const approveForm = forms(html).find((f) => f.includes('value="approved"'));
+    assert.ok(approveForm);
+    const ids = state.tasks.filter((t) => t.mission_id === planningMid).map((t) => t.id);
+    assert.match(await submit("/dashboard",approveForm,{ acceptedTaskIds: [ids[0]], confirmed: "" }), /error=/);
+    assert.match(await submit("/dashboard",approveForm,{ acceptedTaskIds: [], confirmed: "yes" }), /error=/);
+    const saved = new Map(jar); jar.clear();
+    assert.match(await submit("/dashboard",approveForm,{ acceptedTaskIds: [ids[0]], confirmed: "yes" }), /login/);
+    for (const [k,v] of saved) jar.set(k,v);
+    state.workspace_members[0].role = "member";
+    html = await (await request("/dashboard")).text();
+    assert.doesNotMatch(html,/Confirm approved tasks/);
+    assert.match(await submit("/dashboard",approveForm,{ acceptedTaskIds: [ids[0]], confirmed: "yes" }), /error=/);
+    state.workspace_members[0].role = "owner";
+    assert.equal(await submit("/dashboard",approveForm,{ acceptedTaskIds: [ids[0]], confirmed: "yes" }), "/dashboard");
+    html = await (await request("/dashboard")).text();
+    assert.match(html, /Assigned: .*Fixture Researcher/);
+    assert.match(html, /review recorded/); assert.match(html, /Decision history/);
+    assert.match(html, /Approved task list/); assert.match(html, /not executable/);
+    assert.equal(state.tasks.find((t) => t.id === ids[0]).status, "approved");
+    assert.equal(state.tasks.find((t) => t.id === ids[1]).status, "rejected");
+    const before = state.activity_events.length;
+    assert.equal(await submit("/dashboard",approveForm,{ acceptedTaskIds: [ids[0]], confirmed: "yes" }), "/dashboard");
+    assert.equal(state.activity_events.length,before);
+    assert.match(await submit("/dashboard",approveForm,{ acceptedTaskIds: [ids[1]], confirmed: "yes" }), /error=/);
+    const rejectMid = crypto.randomUUID(), rejectRid = crypto.randomUUID();
+    seedReview(rejectMid,rejectRid);
+    html = await (await request("/dashboard")).text();
+    const rejectForm = forms(html).find((f) => f.includes('value="'+rejectMid+'"') && f.includes('value="rejected"'));
+    assert.equal(await submit("/dashboard",rejectForm,{ confirmed: "yes" }), "/dashboard");
+    assert.equal(state.missions.find((m) => m.id === rejectMid).status, "cancelled");
+    assert.ok(state.tasks.filter((t) => t.mission_id === rejectMid).every((t) => t.status === "rejected" && t.agent_id === null));
+    assert.match(await (await request("/dashboard/activity")).text(),/plan.review.approved/);
+    assert.equal(providerCalls,0);
+    assert.ok(!calls.some((c) => c.path.endsWith("finish_chief_plan") || c.path.endsWith("begin_chief_plan")));
+    console.log("PASS (M1.3 HTTP): individual acceptance/rejection, confirmation, member/session denial, assignment/history, idempotency and whole-plan rejection with AI disabled and no privileged key");
   }
   const cookieName = [...jar.keys()].find((k) => k.endsWith("-auth-token"));
   assert.ok(cookieName, "SSR session cookie");
