@@ -11,9 +11,12 @@ export function ResearcherExecution({ task,owner,enabled,runs,artifacts,reviews 
   return <section className="mt-3 rounded border border-input p-3" aria-label="Supervised Researcher execution">
     <h5 className="font-semibold">Supervised Researcher · {state.replaceAll("_"," ")}</h5>
     <p className="my-2 text-sm">Gemini-generated requirements from mission/task inputs only. No browsing, external tools, sources or external verification.</p>
+    <p className="text-sm">Authorized attempts: {runs.length}/3 used · {Math.max(0,3-runs.length)} remaining.</p>
+    {state==="pending_review" && <p className="text-sm">Generated result is pending human review. No further execution is authorized.</p>}
+    {state==="failed" && <p className="text-sm">Retry requires new authorization and an available authorized attempt.</p>}
     {eligible && owner && enabled && ["not_authorized","failed"].includes(state) && runs.length<3 && <form action={authorizeResearcherTask}>
       <input type="hidden" name="taskId" value={task.id} /><input type="hidden" name="requestId" value={randomUUID()} />
-      <label className="text-sm"><input type="checkbox" name="confirmed" value="yes" required style={{width:"auto",marginRight:"0.5rem"}} /> I authorize one potentially paid Gemini call using this mission objective and approved task. This is separate from plan approval.</label>
+      <label className="text-sm"><input type="checkbox" name="confirmed" value="yes" required style={{width:"auto",marginRight:"0.5rem"}} /><span>I authorize one supervised Researcher run using this mission objective and approved task, with up to two potentially paid Gemini requests if the optional 503 retry is enabled. This is separate from plan approval.</span></label>
       <Button variant="outline">Authorize Researcher execution</Button>
     </form>}
     {!enabled && eligible && <p className="text-sm">New Researcher execution is disabled. Existing results can still be reviewed.</p>}
@@ -25,7 +28,8 @@ export function ResearcherExecution({ task,owner,enabled,runs,artifacts,reviews 
       const seconds=Math.max(0,Math.round(((run.endedAt ? Date.parse(run.endedAt) : Date.now())-Date.parse(run.startedAt))/1000));
       return <article className="mt-4 border-t pt-3" key={run.id}>
         <p className="text-sm">Run {run.id} · Gemini / {run.resolvedModel ?? run.model} (requested: {run.model}) · {run.status} · elapsed at refresh: {seconds} seconds</p>
-        {run.failureCode && <p role="alert" className="text-sm">Execution error: {run.failureCode}. No deliverable from this attempt.</p>}
+        {run.diagnostics ? <p className="text-sm">Provider requests: {run.diagnostics.provider_requests} · transient retry: {run.diagnostics.retry_performed ? "performed" : "not performed"} · provider time: {run.diagnostics.provider_elapsed_ms} ms{run.diagnostics.http_status ? ` · HTTP ${run.diagnostics.http_status}` : ""}</p> : <p className="text-sm">Provider request/retry details are unavailable for this historical or interrupted run.</p>}
+        {run.failureCode && <p role="alert" className="text-sm">Execution error: {run.failureCode}. {run.diagnostics?.http_status===503 ? "Gemini is temporarily unavailable." : run.diagnostics?.http_status===429 ? "Gemini quota or rate limit reached; no automatic quota retry." : run.diagnostics?.http_status===401 || run.diagnostics?.http_status===403 ? "Provider credentials or access require administrator review." : run.diagnostics?.http_status===404 ? "Requested model or endpoint is unavailable." : run.diagnostics?.http_status===400 ? "Provider rejected the request or schema." : run.failureCode==="timeout" ? "The execution deadline or transport timeout was reached; no timeout retry." : run.failureCode==="invalid_output" ? "Gemini returned an invalid document; review is unavailable." : run.failureCode==="interrupted" ? "An interrupted execution was recovered." : "Provider execution failed."} No deliverable from this attempt.</p>}
         {owner && run.status==="running" && <form action={recoverResearcherTask}>
           <input type="hidden" name="runId" value={run.id} />
           <p className="text-sm">If interrupted, refresh first. Recovery is allowed only after the two-minute lease expires and never calls a model.</p>

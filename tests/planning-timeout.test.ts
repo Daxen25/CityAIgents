@@ -34,12 +34,12 @@ test("network failure without an elapsed deadline is not diagnosed as model late
  });
 });
 
-test("planning remains 45 seconds and Researcher remains 30 seconds with unchanged error behavior",async(t)=>{
+test("planning remains 45 seconds and Researcher remains 30 seconds with diagnostic timeout classification",async(t)=>{
  const durations:number[]=[];const timer=t.mock.method(AbortSignal,"timeout",(ms:number)=>{durations.push(ms);return new AbortController().signal;});
  await generateGeminiPlan(planningConfig(env),mission,async()=>Response.json(envelope));
  await assert.rejects(generateResearchDocument(researcherConfig(env),{...mission,expectedDeliverable:"Brief"},async()=>{throw new DOMException("private detail","TimeoutError");}),(error:unknown)=>{
-  assert.ok(error instanceof Error);assert.match(error.message,/timeout/);assert.ok(!(error instanceof GeminiTransportFailure));return true;
- });assert.deepEqual(durations,[45_000,30_000]);timer.mock.restore();
+  assert.ok(error instanceof Error);assert.match(error.message,/timeout/);assert.ok(error instanceof GeminiTransportFailure);return true;
+ });assert.equal(durations[0],45_000);assert.ok(durations[1]<=30_000 && durations[1]>29_900);timer.mock.restore();
 });
 
 function fixture(){

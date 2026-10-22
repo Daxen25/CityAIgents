@@ -40,7 +40,8 @@ test("M1.4 PostgreSQL supervised Researcher lifecycle and provenance",async(t)=>
    return {mid,ids,review,planRun:claim.runId};
   }
   const existing=await approvedMission();
-  await db.exec("reset role; begin");await db.exec(readFileSync(`supabase/migrations/${migration}`,"utf8"));await db.exec("commit");await asUser();
+  await db.exec("reset role; begin");await db.exec(readFileSync(`supabase/migrations/${migration}`,"utf8"));await db.exec("commit");
+  await db.exec(readFileSync("supabase/migrations/20261022150000_researcher_reliability.sql","utf8"));await asUser();
   const authorize=(tid:string,request=randomUUID(),confirmed:boolean|null=true)=>scalar<{runId:string;objective:string;title:string;expectedDeliverable:string}>("select public.authorize_researcher_execution($1,$2,'gemini-flash-latest',$3,$4)",[tid,hash,request,confirmed]);
   async function start(rid:string,capability=hash){await asUser("","service_role");await db.query("select public.start_researcher_execution($1,$2)",[rid,capability]);}
   async function finish(rid:string,doc:unknown=document,code:string|null=null,capability=hash,version:string|null=null){await asUser("","service_role");await db.query("select public.finish_researcher_execution($1,$2,$3::jsonb,$4,$5)",[rid,capability,doc===null?null:JSON.stringify(doc),code,version]);}
@@ -158,6 +159,36 @@ test("M1.4 PostgreSQL supervised Researcher lifecycle and provenance",async(t)=>
     assert.equal(await scalar("select status from public.runs where id=$1",[claim.runId]),"running");
     assert.equal(await scalar("select execution_status from public.tasks where id=$1",[p.ids[0]]),"running");
    } finally {await db.exec("reset role; alter table public.activity_events drop constraint offline_research_failure");await asUser();}
+  });
+  const metadata={provider_requests:2,retry_performed:true,http_status:200,failure_class:null,provider_elapsed_ms:900,timeout_source:null};
+  const diagnosticFinish=(run:string,doc:unknown=document,code:string|null=null,meta:unknown=metadata)=>db.query("select public.finish_researcher_execution_with_diagnostics($1,$2,$3::jsonb,$4,$5,$6::jsonb)",[run,hash,doc===null?null:JSON.stringify(doc),code,code?null:"gemini-fixture",JSON.stringify(meta)]);
+  await t.test("M1.4.1 keeps historical data and restricts diagnostics finalization to service_role",async()=>{
+   await asUser();assert.ok(await scalar<boolean>("select bool_and(execution_metadata is null) from public.runs"));
+   for(const role of ["anon","authenticated"]){
+    await db.exec("reset role");
+    for(const name of ["public.finish_researcher_execution_with_diagnostics(uuid,text,jsonb,text,text,jsonb)","private.finish_researcher_execution_with_diagnostics(uuid,text,jsonb,text,text,jsonb)"])
+     assert.equal(await scalar<boolean>("select has_function_privilege($1::name,$2,'execute')",[role,name]),false);
+   }await asUser();
+  });
+  await t.test("diagnostics and artifact finalize atomically in one authorized attempt",async()=>{
+   for(const failed of [false,true]){
+    const p=await approvedMission();const claim=await authorize(p.ids[0]);await start(claim.runId);
+    const meta=failed?{...metadata,http_status:503,failure_class:"server_error"}:metadata;
+    await diagnosticFinish(claim.runId,failed?null:document,failed?"provider_error":null,meta);await asUser();
+    assert.deepEqual(await scalar("select execution_metadata from public.runs where id=$1",[claim.runId]),meta);
+    assert.equal(await scalar<number>("select count(*)::int from public.runs where task_id=$1",[p.ids[0]]),1);
+    assert.equal(await scalar<number>("select count(*)::int from public.artifacts where run_id=$1",[claim.runId]),failed?0:1);
+    await asUser("","service_role");await assert.rejects(diagnosticFinish(claim.runId),/lease/);await asUser();
+   }
+  });
+  await t.test("untrusted metadata and late diagnostics failure cannot partially persist a document",async()=>{
+   const p=await approvedMission();const claim=await authorize(p.ids[0]);await start(claim.runId);
+   for(const meta of [{...metadata,prompt:"private"},{...metadata,provider_requests:3},{...metadata,retry_performed:false},{...metadata,failure_class:"private response"}])await assert.rejects(diagnosticFinish(claim.runId,document,null,meta));
+   await db.exec("reset role; alter table public.runs add constraint offline_metadata_failure check(execution_metadata is null) not valid");
+   try{await asUser("","service_role");await assert.rejects(diagnosticFinish(claim.runId),/offline_metadata_failure/);await asUser();
+    assert.equal(await scalar("select status from public.runs where id=$1",[claim.runId]),"running");
+    assert.equal(await scalar<number>("select count(*)::int from public.artifacts where run_id=$1",[claim.runId]),0);
+   }finally{await db.exec("reset role; alter table public.runs drop constraint offline_metadata_failure");await asUser();}
   });
  } finally {await db.close();}
 });
