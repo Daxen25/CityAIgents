@@ -3,7 +3,8 @@ import { requireUser } from "@/lib/auth";
 import { nextStatus, type Action } from "@agent-city/core";
 import { newMission, advanceMission, newWorkspace, generateChiefPlan, recoverChiefPlan } from "../actions";
 import { missionPlans, planningEnabled } from "@/lib/planning";
-import { MissionPlan } from "@/components/mission-plan";
+import { TaskPlanReview } from "@/components/task-plan-review";
+import { orchestrationSnapshot } from "@/lib/orchestration";
 import { Button } from "@/components/ui/button";
 export const maxDuration = 60;
 export default async function Dashboard({
@@ -14,6 +15,7 @@ export default async function Dashboard({
   const user = await requireUser();
   const data = await snapshot(user);
   const planning = await missionPlans(data.missions.some((m) => m.executionMode === "chief_of_staff"));
+  const orchestration = await orchestrationSnapshot(planning.artifacts.length > 0);
   const aiEnabled = planningEnabled();
   const { error } = await searchParams;
   return (
@@ -123,7 +125,7 @@ export default async function Dashboard({
                     </span>
                   </div>
                   <p className="mt-2 text-xs uppercase tracking-wide text-slate-500">
-                    {m.kind} ·{" "}
+                    {m.executionMode === "chief_of_staff" ? "AI mission · review and assignment only" : "Mock mission · simulated lifecycle"} · {m.kind} ·{" "}
                     {data.workspaces.find((w) => w.id === m.workspaceId)?.name}
                   </p>
                   <p className="my-4 whitespace-pre-wrap text-sm text-slate-700">
@@ -194,7 +196,10 @@ export default async function Dashboard({
                       <p className="text-sm">If interrupted, wait two minutes before recovery. Recovery does not call the model.</p>
                       <Button variant="outline">Recover interrupted plan</Button>
                     </form>}
-                    {planning.artifacts.filter((artifact) => artifact.mission_id === m.id).map((artifact) => <MissionPlan key={artifact.id} content={artifact.content} />)}
+                    {planning.artifacts.filter((artifact) => artifact.mission_id === m.id).map((artifact) => <TaskPlanReview key={artifact.id} content={artifact.content} missionId={m.id} runId={artifact.run_id} missionStatus={m.status}
+                      tasks={orchestration.tasks.filter((task) => task.missionId === m.id && task.planRunId === artifact.run_id)}
+                      review={orchestration.reviews.find((review) => review.missionId === m.id && review.runId === artifact.run_id)}
+                      owner={data.members.some((member) => member.workspaceId === m.workspaceId && member.userId === user && member.role === "owner")} />)}
                   </>}
                   {m.status === "completed" && (
                     <p className="mt-4 text-sm text-primary">

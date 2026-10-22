@@ -9,6 +9,7 @@ import { mode } from "@/lib/config";
 import { supabase } from "@/lib/supabase";
 import { createMission, createWorkspace, transition } from "@/lib/repository";
 import { planMission, recoverPlan } from "@/lib/planning";
+import { reviewTaskPlan } from "@/lib/orchestration";
 export async function login(form: FormData) {
   if (mode() === "mock") {
     (await cookies()).set("city-local", localToken(), {
@@ -95,4 +96,15 @@ export async function generateChiefPlan(form: FormData) {
 export async function recoverChiefPlan(form: FormData) {
   await requireUser();
   await mutation(async () => { await recoverPlan(z.uuid().parse(form.get("id"))); });
+}
+
+export async function finalizeTaskPlan(form: FormData) {
+  await requireUser();
+  await mutation(async () => {
+    await reviewTaskPlan({
+      missionId: form.get("missionId"), runId: form.get("runId"), requestId: form.get("requestId"),
+      decision: form.get("decision"), acceptedTaskIds: form.getAll("acceptedTaskIds"),
+      confirmed: form.get("confirmed") === "yes",
+    });
+  });
 }
