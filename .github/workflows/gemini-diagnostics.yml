@@ -1,0 +1,62 @@
+name: Gemini diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Diagnostic operation (generate may incur API charges)
+        type: choice
+        required: true
+        default: validate
+        options:
+          - validate
+          - metadata
+          - generate
+      GEMINI_MODEL:
+        description: Explicit Gemini model; project availability is not assumed
+        type: string
+        required: true
+        default: gemini-3.6-flash
+      acknowledge_api_charges:
+        description: I authorize ONE potentially billable synthetic generation request
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gemini-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    # No PR/fork code, alternate refs or reruns with previously granted consent.
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'Daxen25/CityAIgents' && github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted dispatch commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      # Read inputs from GITHUB_EVENT_PATH so malformed raw values are not echoed as step env.
+      - name: Validate context and inputs without credentials
+        run: node scripts/github-gemini-diagnostics.mjs --validate-inputs
+      - name: Install locked dependencies without lifecycle scripts
+        run: |
+          if ! npm ci --ignore-scripts --no-audit --no-fund > /dev/null 2>&1; then
+            echo 'Dependency installation failed.'
+            echo 'Dependency installation failed; no diagnostic request ran.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Run once and publish sanitized diagnostics
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node scripts/github-gemini-diagnostics.mjs
