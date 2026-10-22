@@ -1,4 +1,23 @@
 // Only the server-only planning binding writes these diagnostics. Never serialize raw errors.
+export const providerFailureClasses = ["invalid_request_or_schema", "authentication", "permission_denied", "model_or_endpoint_unavailable", "quota_or_rate_limit", "server_error", "http_error"] as const;
+export type ProviderFailureClass = typeof providerFailureClasses[number];
+function safeClassification(value: unknown): ProviderFailureClass | undefined {
+  return providerFailureClasses.includes(value as ProviderFailureClass) ? value as ProviderFailureClass : undefined;
+}
+export class PlanningFailure extends Error {
+  constructor(public readonly code: "timeout" | "provider_error" | "invalid_output") {
+    super(`Planning failed (${code}). No tasks were executed.`);
+  }
+}
+export class GeminiHttpFailure extends PlanningFailure {
+  readonly failureClass: ProviderFailureClass;
+  constructor(public readonly httpStatus: number) {
+    super("provider_error");
+    this.failureClass = httpStatus === 400 ? "invalid_request_or_schema" : httpStatus === 401 ? "authentication" :
+      httpStatus === 403 ? "permission_denied" : httpStatus === 404 ? "model_or_endpoint_unavailable" :
+      httpStatus === 429 ? "quota_or_rate_limit" : httpStatus >= 500 && httpStatus <= 599 ? "server_error" : "http_error";
+  }
+}
 export type PlanningStage = "claim" | "generation" | "finalize_plan" | "finalize_failure" | "recover" | "start" | "review";
 export type PlanningDiagnostic = {
   stage: PlanningStage;
@@ -8,6 +27,7 @@ export type PlanningDiagnostic = {
   elapsedMs: number;
   code?: string;
   httpStatus?: number;
+  failureClass?: ProviderFailureClass;
 };
 function safeCode(value: unknown) {
   return typeof value === "string" && /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(value) ? value : undefined;
@@ -24,7 +44,8 @@ export class PlanningRpcError extends Error {
     this.httpStatus = safeStatus(status);
   }
 }
-export function diagnosticError(error: unknown): Pick<PlanningDiagnostic, "code" | "httpStatus"> {
+export function diagnosticError(error: unknown): Pick<PlanningDiagnostic, "code" | "httpStatus" | "failureClass"> {
+  if (error instanceof GeminiHttpFailure) return { httpStatus: safeStatus(error.httpStatus), failureClass: safeClassification(error.failureClass) };
   return error instanceof PlanningRpcError ? { code: error.code, httpStatus: error.httpStatus } : {};
 }
 export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: string) => void = console.info, topic: "planning" | "researcher" = "planning") {
@@ -37,6 +58,7 @@ export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: s
     elapsedMs: Number.isFinite(event.elapsedMs) ? Math.max(0, Math.round(event.elapsedMs)) : undefined,
     code: safeCode(event.code),
     httpStatus: safeStatus(event.httpStatus),
+    failureClass: safeClassification(event.failureClass),
   };
   // A diagnostics sink failure must never change authorization, persistence or retry behavior.
   try { write(`agent_city.${topic === "researcher" ? "researcher" : "planning"} ${JSON.stringify(safe)}`); } catch { /* best effort */ }

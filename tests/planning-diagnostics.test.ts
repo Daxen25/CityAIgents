@@ -37,7 +37,7 @@ test("diagnostic logging whitelists fields and strips adversarial values", () =>
   assert.deepEqual(result, { stage: "finalize_plan", outcome: "failed", provider: "gemini", runId: id, elapsedMs: 45201, code: "23514", httpStatus: 400 });
   assert.ok(!lines[0].includes(privateText));
   lines.length = 0;
-  logPlanningDiagnostic({ stage: privateText, outcome: privateText, provider: privateText, runId: privateText, elapsedMs: Infinity, code: privateText, httpStatus: 999 } as unknown as PlanningDiagnostic, (line) => lines.push(line));
+  logPlanningDiagnostic({ stage: privateText, outcome: privateText, provider: privateText, runId: privateText, elapsedMs: Infinity, code: privateText, httpStatus: 999, failureClass: privateText } as unknown as PlanningDiagnostic, (line) => lines.push(line));
   assert.ok(!lines[0].includes(privateText));
   assert.deepEqual(JSON.parse(lines[0].slice("agent_city.planning ".length)), { stage: "unknown", outcome: "unknown" });
 });
