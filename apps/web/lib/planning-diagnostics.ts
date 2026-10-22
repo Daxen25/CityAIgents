@@ -18,6 +18,13 @@ export class GeminiHttpFailure extends PlanningFailure {
       httpStatus === 429 ? "quota_or_rate_limit" : httpStatus >= 500 && httpStatus <= 599 ? "server_error" : "http_error";
   }
 }
+// Only fixed categories are retained; never keep the transport error/cause/message.
+export class GeminiTransportFailure extends PlanningFailure {
+  constructor(code: "timeout" | "provider_error", public readonly transportPhase: "response_headers" | "response_body",
+    public readonly timeoutSource: "application_deadline" | "transport_timeout" | "transport_error", public readonly timeoutMs: number) {
+    super(code);
+  }
+}
 export type PlanningStage = "claim" | "generation" | "finalize_plan" | "finalize_failure" | "recover" | "start" | "review";
 export type PlanningDiagnostic = {
   stage: PlanningStage;
@@ -28,6 +35,9 @@ export type PlanningDiagnostic = {
   code?: string;
   httpStatus?: number;
   failureClass?: ProviderFailureClass;
+  transportPhase?: "response_headers" | "response_body";
+  timeoutSource?: "application_deadline" | "transport_timeout" | "transport_error";
+  timeoutMs?: number;
 };
 function safeCode(value: unknown) {
   return typeof value === "string" && /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(value) ? value : undefined;
@@ -44,7 +54,8 @@ export class PlanningRpcError extends Error {
     this.httpStatus = safeStatus(status);
   }
 }
-export function diagnosticError(error: unknown): Pick<PlanningDiagnostic, "code" | "httpStatus" | "failureClass"> {
+export function diagnosticError(error: unknown): Pick<PlanningDiagnostic, "code" | "httpStatus" | "failureClass" | "transportPhase" | "timeoutSource" | "timeoutMs"> {
+  if (error instanceof GeminiTransportFailure) return { transportPhase: error.transportPhase, timeoutSource: error.timeoutSource, timeoutMs: error.timeoutMs };
   if (error instanceof GeminiHttpFailure) return { httpStatus: safeStatus(error.httpStatus), failureClass: safeClassification(error.failureClass) };
   return error instanceof PlanningRpcError ? { code: error.code, httpStatus: error.httpStatus } : {};
 }
@@ -59,6 +70,9 @@ export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: s
     code: safeCode(event.code),
     httpStatus: safeStatus(event.httpStatus),
     failureClass: safeClassification(event.failureClass),
+    transportPhase: event.transportPhase === "response_headers" || event.transportPhase === "response_body" ? event.transportPhase : undefined,
+    timeoutSource: ["application_deadline", "transport_timeout", "transport_error"].includes(event.timeoutSource ?? "") ? event.timeoutSource : undefined,
+    timeoutMs: Number.isInteger(event.timeoutMs) && event.timeoutMs! > 0 && event.timeoutMs! <= 45_000 ? event.timeoutMs : undefined,
   };
   // A diagnostics sink failure must never change authorization, persistence or retry behavior.
   try { write(`agent_city.${topic === "researcher" ? "researcher" : "planning"} ${JSON.stringify(safe)}`); } catch { /* best effort */ }

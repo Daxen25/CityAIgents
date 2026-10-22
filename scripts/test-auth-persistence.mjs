@@ -9,7 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 const planningTest = process.argv.includes("--planning");
 const researcherTest = process.argv.includes("--researcher");
 const orchestrationTest = process.argv.includes("--orchestration") || researcherTest;
-const persistenceFailure = process.argv.includes("--persistence-failure");
+const finalizerUnavailable = process.argv.includes("--finalizer-unavailable");
+const persistenceFailure = process.argv.includes("--persistence-failure") || finalizerUnavailable;
 const provider = process.argv.includes("--openai") ? "openai" : "gemini";
 const planningModel = provider === "gemini" ? "gemini-flash-latest" : "gpt-4.1-mini";
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -128,7 +129,7 @@ const fixture = createServer(async (req, res) => {
       assert.equal(req.headers.authorization, "Bearer sb_secret_m11_fixture");
       assert.deepEqual(body, { rid: planningRid, token_hash: planningHash, plan: offlinePlan, error_code: null });
       assert.ok(!Object.hasOwn(body, "actor_id"));
-      if (persistenceFailure) return send(400, { code: "23514", message: "private-plan-sensitive-marker", details: planningHash, hint: "offline-gemini-fixture" });
+      if (persistenceFailure) return send(finalizerUnavailable ? 503 : 400, { code: finalizerUnavailable ? "PGRST000" : "23514", message: "private-plan-sensitive-marker", details: planningHash, hint: "offline-gemini-fixture" });
       state.runs[0].status = "completed";
       state.missions.find((m) => m.id === planningMid).status = "awaiting_approval";
       persistFixturePlan(planningMid, planningRid);
@@ -542,7 +543,7 @@ try {
       assert.equal(state.artifacts.length, 0);
       const events = logs.split("\n").filter((line) => line.startsWith("agent_city.planning ")).map((line) => JSON.parse(line.slice("agent_city.planning ".length)));
       assert.ok(events.some((e) => e.stage === "generation" && e.outcome === "succeeded" && e.runId === planningRid));
-      assert.ok(events.some((e) => e.stage === "finalize_plan" && e.outcome === "failed" && e.code === "23514" && e.httpStatus === 400 && e.runId === planningRid));
+      assert.ok(events.some((e) => e.stage === "finalize_plan" && e.outcome === "failed" && e.code === (finalizerUnavailable ? "PGRST000" : "23514") && e.httpStatus === (finalizerUnavailable ? 503 : 400) && e.runId === planningRid));
       const diagnosticText = JSON.stringify(events);
       assert.doesNotMatch(diagnosticText, /private-plan-sensitive-marker|Offline fixture plan|offline-gemini-fixture|sb_secret_m11_fixture/);
       assert.ok(!diagnosticText.includes(planningHash));

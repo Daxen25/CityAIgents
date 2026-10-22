@@ -27,11 +27,11 @@ export async function planMission(id: string, consent: boolean) {
     },
     authenticate: async () => { await requireUser(); },
     capability: () => ({ hash: createHash("sha256").update(randomBytes(32)).digest("hex") }),
-    claim: async (mid, token_hash, selected_model, selected_provider) => checked(await (await supabase()).rpc("begin_chief_plan", { mid, token_hash, selected_model, selected_provider })),
+    claim: async (mid, token_hash, selected_model, selected_provider) => checked(await (await supabase()).rpc("begin_chief_plan", { mid, token_hash, selected_model, selected_provider }).retry(false).abortSignal(AbortSignal.timeout(5_000))),
     generate: generatePlan,
     diagnostic: logPlanningDiagnostic,
     finish: async (rid, token_hash, plan, error_code) => {
-      checked(await finalizer.rpc("finish_chief_plan", { rid, token_hash, plan, error_code }));
+      checked(await finalizer.rpc("finish_chief_plan", { rid, token_hash, plan, error_code }).retry(false).abortSignal(AbortSignal.timeout(10_000)));
     },
   });
 }
@@ -42,7 +42,7 @@ export async function recoverPlan(id: string) {
   const start = performance.now();
   logPlanningDiagnostic({ stage: "recover", outcome: "started", elapsedMs: 0 });
   try {
-    checked(await (await supabase()).rpc("recover_chief_plan", { mid: id }));
+    checked(await (await supabase()).rpc("recover_chief_plan", { mid: id }).retry(false).abortSignal(AbortSignal.timeout(10_000)));
     logPlanningDiagnostic({ stage: "recover", outcome: "succeeded", elapsedMs: performance.now() - start });
   } catch (error) {
     logPlanningDiagnostic({ stage: "recover", outcome: "failed", elapsedMs: performance.now() - start, ...diagnosticError(error) });
