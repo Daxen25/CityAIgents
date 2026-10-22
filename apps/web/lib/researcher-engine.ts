@@ -44,7 +44,7 @@ export async function executeResearcher(input: unknown, deps: ResearcherDependen
     doc=researchDocumentSchema.parse(await deps.generate(config,{ objective: claimed.objective,title: claimed.title,expectedDeliverable: claimed.expectedDeliverable }, (version) => { modelVersion=version; }));
     report("generation","succeeded");
   } catch (error) {
-    report("generation","failed");
+    report("generation","failed",error);
     const code = error instanceof PlanningFailure ? error.code : "invalid_output";
     report("finalize_failure","started");
     try { await deps.finish(runId,hash,null,code,null); report("finalize_failure","succeeded"); }

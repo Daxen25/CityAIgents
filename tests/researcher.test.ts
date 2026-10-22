@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { researchDocumentSchema } from "@agent-city/core";
 import { researcherConfig,generateResearchDocument,executeResearcher,type ResearcherDependencies } from "../apps/web/lib/researcher-engine";
-import { PlanningFailure } from "../apps/web/lib/planning-providers";
-import { PlanningRpcError,logPlanningDiagnostic,type PlanningDiagnostic } from "../apps/web/lib/planning-diagnostics";
+import { z } from "zod";
+import { planSchema } from "@agent-city/core";
+import { PlanningFailure, generateGeminiPlan } from "../apps/web/lib/planning-providers";
+import { GeminiHttpFailure,PlanningRpcError,logPlanningDiagnostic,type PlanningDiagnostic } from "../apps/web/lib/planning-diagnostics";
 const id="11111111-1111-4111-8111-111111111111";
 const env={AGENT_CITY_MODE:"supabase",AGENT_CITY_RESEARCHER_EXECUTION_ENABLED:"true",GEMINI_API_KEY:"fixture-key",SUPABASE_SERVICE_ROLE_KEY:"fixture-service"};
 const input={objective:"Mission objective",title:"Approved Researcher task",expectedDeliverable:"Requirements brief"};
@@ -31,7 +33,9 @@ test("Gemini Researcher performs one bounded structured request using only trust
   calls++;assert.equal(String(url),"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent");
   assert.equal(options?.redirect,"error");assert.equal(new Headers(options?.headers).get("x-goog-api-key"),"fixture-key");assert.ok(options?.signal);
   const body=JSON.parse(String(options?.body));assert.equal(body.generationConfig.maxOutputTokens,4000);assert.equal(body.generationConfig.candidateCount,1);
-  assert.equal(body.generationConfig.responseJsonSchema.properties.sources.maxItems,0);assert.equal(body.tools,undefined);
+  assert.equal(body.generationConfig.responseJsonSchema.properties.sources.maxItems,0);
+  assert.deepEqual(body.generationConfig.responseJsonSchema.properties.verification.enum,["not_externally_verified"]);
+  assert.equal(body.generationConfig.responseJsonSchema.properties.verification.const,undefined);assert.equal(body.tools,undefined);
   assert.match(body.systemInstruction.parts[0].text,/Do not invent sources/);assert.deepEqual(JSON.parse(body.contents[0].parts[0].text),input);
   assert.ok(!String(options?.body).includes("fixture-service"));
   return Response.json({modelVersion:"gemini-flash-fixture",candidates:[{finishReason:"STOP",content:{parts:[{text:JSON.stringify(doc)}]}}]});
@@ -39,8 +43,8 @@ test("Gemini Researcher performs one bounded structured request using only trust
  assert.equal(calls,1);assert.deepEqual(result,doc);assert.equal(resolvedModel,"gemini-flash-fixture");
 });
 test("rate/quota/auth/provider errors and malformed research output do not retry or fall back",async()=>{
- for(const status of [400,401,403,429,500,503]){
-  let calls=0;await assert.rejects(generateResearchDocument(researcherConfig(env),input,async()=>{calls++;return Response.json({error:{message:"private response"}},{status});}),/provider_error/);assert.equal(calls,1);
+ for(const [status,failureClass] of [[400,"invalid_request_or_schema"],[401,"authentication"],[403,"permission_denied"],[404,"model_or_endpoint_unavailable"],[429,"quota_or_rate_limit"],[500,"server_error"],[503,"server_error"]] as const){
+  let calls=0;await assert.rejects(generateResearchDocument(researcherConfig(env),input,async()=>{calls++;return new Response("private response",{status});}),(error:unknown)=>{assert.ok(error instanceof GeminiHttpFailure);assert.equal(error.httpStatus,status);assert.equal(error.failureClass,failureClass);assert.ok(!JSON.stringify(error).includes("private response"));return true;});assert.equal(calls,1);
  }
  await assert.rejects(generateResearchDocument(researcherConfig(env),input,async()=>Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text:JSON.stringify({...doc,sources:["citation"]})}]}}]})),/invalid_output/);
  await assert.rejects(generateResearchDocument(researcherConfig(env),input,async()=>{throw new DOMException("private timeout","TimeoutError");}),/timeout/);
@@ -67,4 +71,28 @@ test("ambiguous result finalization never overwrites success or invokes another 
 test("failed failure-finalization leaves an explicitly recoverable interruption",async()=>{
  const {deps,calls}=dependencies();deps.generate=async()=>{calls.push("gemini");throw new PlanningFailure("timeout");};deps.finish=async()=>{calls.push("finish");throw new Error("transport failed");};
  await assert.rejects(executeResearcher(request,deps),/interrupted/);assert.deepEqual(calls,["auth","authorize","start","gemini","finish"]);
+});
+
+test("Researcher HTTP failure diagnostics reach the server sink without private data",async()=>{
+ const {deps,calls,events}=dependencies();
+ deps.generate=async()=>generateResearchDocument(researcherConfig(env),input,async()=>new Response("private provider response",{status:429}));
+ await assert.rejects(executeResearcher(request,deps),/provider_error/);
+ assert.deepEqual(calls,["auth","authorize","start","provider_error"]);
+ const failure=events.find(e=>e.stage==="generation"&&e.outcome==="failed");
+ assert.equal(failure?.httpStatus,429);assert.equal(failure?.failureClass,"quota_or_rate_limit");
+ const lines:string[]=[];events.forEach(e=>logPlanningDiagnostic(e,l=>lines.push(l),"researcher"));
+ assert.ok(lines.some(l=>l.includes('"httpStatus":429')));
+ for(const secret of ["private provider response",input.objective,env.GEMINI_API_KEY,env.SUPABASE_SERVICE_ROLE_KEY,"a".repeat(64)])assert.ok(!lines.join("").includes(secret));
+});
+
+test("planning transport keeps its schema and request format while Researcher normalizes its literal",async()=>{
+ const plan={summary:"Plan",tasks:[{title:"Task",suggested_agent_role:"researcher",expected_deliverable:"Brief"}],risks:[]};
+ await generateGeminiPlan(researcherConfig(env),{title:input.title,objective:input.objective},async(_url,options)=>{
+  const body=JSON.parse(String(options?.body));
+  assert.deepEqual(body.generationConfig.responseJsonSchema,z.toJSONSchema(planSchema));
+  assert.equal(body.generationConfig.responseMimeType,"application/json");
+  assert.equal(body.generationConfig.maxOutputTokens,6000);assert.equal(body.generationConfig.candidateCount,1);
+  assert.deepEqual(body.contents,[{role:"user",parts:[{text:JSON.stringify({title:input.title,objective:input.objective})}]}]);
+  return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text:JSON.stringify(plan)}]}}]});
+ });
 });

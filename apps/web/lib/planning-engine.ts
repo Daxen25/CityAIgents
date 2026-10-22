@@ -60,7 +60,7 @@ export async function executePlanning(id: string, consent: boolean, deps: Planni
     plan = planSchema.parse(await deps.generate(config, { title: claimed.title, objective: claimed.objective }));
     report("generation", "succeeded"); // Evidence of a returned, locally validated plan, without logging content.
   } catch (error) {
-    report("generation", "failed");
+    report("generation", "failed", error);
     const failure = error instanceof PlanningFailure ? error : new PlanningFailure("invalid_output");
     report("finalize_failure", "started");
     try { await deps.finish(claimed.runId, hash, null, failure.code); report("finalize_failure", "succeeded"); }

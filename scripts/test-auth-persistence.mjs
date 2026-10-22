@@ -664,6 +664,9 @@ try {
     assert.match(await submit("/dashboard",await researcherForm(failed.id),{confirmed:"yes"}),/error=/);
     assert.equal(providerCalls,3); assert.equal(failed.execution_status,"failed");
     assert.equal(state.artifacts.filter((a)=>a.task_id===failed.id).length,0);
+    const providerDiagnostic=logs.split("\n").filter(l=>l.startsWith("agent_city.researcher ")).map(l=>JSON.parse(l.slice("agent_city.researcher ".length))).find(e=>e.stage==="generation"&&e.outcome==="failed");
+    assert.equal(providerDiagnostic?.httpStatus,429); assert.equal(providerDiagnostic?.failureClass,"quota_or_rate_limit");
+    assert.ok(!logs.includes("private-provider-failure"));
     researcherProviderFailure=false;
     const interrupted=seedApprovedTask(); researcherStartFailure=true;
     assert.match(await submit("/dashboard",await researcherForm(interrupted.id),{confirmed:"yes"}),/error=/); assert.equal(providerCalls,3);
