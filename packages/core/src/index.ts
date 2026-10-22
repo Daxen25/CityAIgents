@@ -130,4 +130,4 @@ export function mockResult() {
   };
 }
 
-export { researchDocumentSchema, researcherAuthorizationInput, researcherReviewInput, type ResearchDocument, type ExecutionState, type ResearcherRun, type ResearcherArtifact, type ResearcherReview } from "./researcher";
+export { researcherDiagnosticsSchema, type ResearcherDiagnostics, researchDocumentSchema, researcherAuthorizationInput, researcherReviewInput, type ResearchDocument, type ExecutionState, type ResearcherRun, type ResearcherArtifact, type ResearcherReview } from "./researcher";

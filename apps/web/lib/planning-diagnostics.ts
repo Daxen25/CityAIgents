@@ -38,6 +38,9 @@ export type PlanningDiagnostic = {
   transportPhase?: "response_headers" | "response_body";
   timeoutSource?: "application_deadline" | "transport_timeout" | "transport_error";
   timeoutMs?: number;
+  providerRequest?: number; retryEligible?: boolean;
+  retryDecision?: "eligible" | "disabled" | "not_eligible" | "scheduled" | "performed" | "skipped_budget";
+  requestedModel?: string; resolvedModel?: string;
 };
 function safeCode(value: unknown) {
   return typeof value === "string" && /^(?:[0-9A-Z]{5}|PGRST[0-9]{3})$/.test(value) ? value : undefined;
@@ -67,6 +70,11 @@ export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: s
     provider: event.provider === "gemini" || event.provider === "openai" ? event.provider : undefined,
     runId: typeof event.runId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(event.runId) ? event.runId : undefined,
     elapsedMs: Number.isFinite(event.elapsedMs) ? Math.max(0, Math.round(event.elapsedMs)) : undefined,
+    providerRequest: event.providerRequest === 0 || event.providerRequest === 1 || event.providerRequest === 2 ? event.providerRequest : undefined,
+    retryEligible: typeof event.retryEligible === "boolean" ? event.retryEligible : undefined,
+    retryDecision: ["eligible","disabled","not_eligible","scheduled","performed","skipped_budget"].includes(event.retryDecision ?? "") ? event.retryDecision : undefined,
+    requestedModel: typeof event.requestedModel === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(event.requestedModel) ? event.requestedModel : undefined,
+    resolvedModel: typeof event.resolvedModel === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(event.resolvedModel) ? event.resolvedModel : undefined,
     code: safeCode(event.code),
     httpStatus: safeStatus(event.httpStatus),
     failureClass: safeClassification(event.failureClass),

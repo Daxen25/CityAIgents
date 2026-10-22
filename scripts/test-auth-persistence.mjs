@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 const planningTest = process.argv.includes("--planning");
 const researcherTest = process.argv.includes("--researcher");
+const researcherRetry = process.argv.includes("--researcher-retry");
+let transient503Remaining=researcherRetry?1:0;
 const orchestrationTest = process.argv.includes("--orchestration") || researcherTest;
 const finalizerUnavailable = process.argv.includes("--finalizer-unavailable");
 const persistenceFailure = process.argv.includes("--persistence-failure") || finalizerUnavailable;
@@ -113,6 +115,7 @@ const fixture = createServer(async (req, res) => {
         assert.ok(researcherTest); assert.equal(req.headers["x-goog-api-key"],"offline-gemini-fixture");
         assert.equal(body.generationConfig.maxOutputTokens,4000); assert.equal(body.tools,undefined);
         providerCalls++;
+        if(transient503Remaining>0){transient503Remaining--;return send(503,{error:{message:"private-transient-response"}});}
         if (researcherProviderFailure) return send(429,{error:{message:"private-provider-failure"}});
         return send(200,{modelVersion:"gemini-flash-fixture",candidates:[{finishReason:"STOP",content:{parts:[{text:JSON.stringify(offlineResearch)}]}}]});
       }
@@ -135,7 +138,7 @@ const fixture = createServer(async (req, res) => {
       persistFixturePlan(planningMid, planningRid);
       return send(200, null);
     }
-    if (["/rest/v1/rpc/start_researcher_execution","/rest/v1/rpc/finish_researcher_execution"].includes(url.pathname)) {
+    if (["/rest/v1/rpc/start_researcher_execution","/rest/v1/rpc/finish_researcher_execution_with_diagnostics"].includes(url.pathname)) {
       assert.ok(researcherTest); assert.equal(req.headers.authorization,"Bearer sb_secret_m11_fixture");
       const run=state.runs.find((r)=>r.id===body.rid && r.purpose==="researcher");
       const task=state.tasks.find((t)=>t.id===run?.task_id);
@@ -145,8 +148,10 @@ const fixture = createServer(async (req, res) => {
         if (researcherStartFailure) return send(503,{code:"PGRST202",message:"offline-start-failure"});
         assert.equal(task.execution_status,"authorized"); task.execution_status="running"; run.started_at=new Date().toISOString();
       } else {
-        assert.deepEqual(Object.keys(body).sort(),["doc","error_code","model_version","rid","token_hash"]);
+        assert.deepEqual(Object.keys(body).sort(),["doc","error_code","execution_metadata","model_version","rid","token_hash"]);
         assert.equal(task.execution_status,"running");
+        run.execution_metadata=body.execution_metadata;
+        assert.ok([1,2].includes(body.execution_metadata.provider_requests));
         run.ended_at=new Date().toISOString(); run.failure_code=body.error_code; run.resolved_model=body.model_version;
         if (body.error_code) { assert.equal(body.doc,null); run.status="failed"; task.execution_status="failed"; }
         else {
@@ -363,6 +368,7 @@ const app = spawn(
       ...process.env,
       AGENT_CITY_MODE: "supabase",
       AGENT_CITY_RESEARCHER_EXECUTION_ENABLED: researcherTest ? "true" : "false",
+      AGENT_CITY_RESEARCHER_503_RETRY_ENABLED: researcherRetry ? "true" : "false",
       AGENT_CITY_AI_PLANNING_ENABLED: planningTest ? "true" : "false",
       AGENT_CITY_AI_PROVIDER: provider,
       GEMINI_API_KEY: (orchestrationTest && !researcherTest) ? "" : "offline-gemini-fixture",
@@ -635,11 +641,14 @@ try {
     assert.equal(await researcherForm(task.id),undefined);
     assert.match(await submit("/dashboard",form,{confirmed:"yes"}),/error=/); assert.equal(providerCalls,0);
     state.workspace_members[0].role="owner";
-    assert.equal(await submit("/dashboard",form,{confirmed:"yes"}),"/dashboard"); assert.equal(providerCalls,1);
+    assert.equal(await submit("/dashboard",form,{confirmed:"yes"}),"/dashboard"); assert.equal(providerCalls,1+(researcherRetry?1:0));
     assert.equal(task.status,"approved"); assert.equal(task.execution_status,"pending_review");
-    assert.match(await submit("/dashboard",form,{confirmed:"yes"}),/error=/); assert.equal(providerCalls,1);
+    assert.match(await submit("/dashboard",form,{confirmed:"yes"}),/error=/); assert.equal(providerCalls,1+(researcherRetry?1:0));
     html=await (await request("/dashboard")).text();
     assert.match(html,/Offline generated requirements brief/); assert.match(html,/not externally verified/); assert.match(html,/gemini-flash-latest/); assert.match(html,/gemini-flash-fixture/); assert.match(html,/elapsed at refresh/);
+    assert.match(html,/Authorized attempts:/);assert.match(html,/pending human review/);
+    assert.match(html,researcherRetry?/transient retry: <!-- -->performed/:/transient retry: <!-- -->not performed/);
+    assert.doesNotMatch(html,/&#x20;/);
     assert.doesNotMatch(html,/offline-gemini-fixture|sb_secret_m11_fixture/);
     const run=state.runs.find((r)=>r.id===task.execution_run_id); assert.ok(!html.includes(run.lease_hash));
     const accept=forms(html).find((f)=>f.includes('value="'+run.id+'"') && f.includes('value="accepted"'));
@@ -657,26 +666,26 @@ try {
       return proposed[0];
     }
     const rejected=seedApprovedTask(); form=await researcherForm(rejected.id);
-    assert.equal(await submit("/dashboard",form,{confirmed:"yes"}),"/dashboard"); assert.equal(providerCalls,2);
+    assert.equal(await submit("/dashboard",form,{confirmed:"yes"}),"/dashboard"); assert.equal(providerCalls,2+(researcherRetry?1:0));
     html=await (await request("/dashboard")).text();
     const reject=forms(html).find((f)=>f.includes('value="'+rejected.execution_run_id+'"') && f.includes('value="rejected"'));
     assert.equal(await submit("/dashboard",reject,{confirmed:"yes"}),"/dashboard"); assert.equal(rejected.execution_status,"rejected");
     const failed=seedApprovedTask(); researcherProviderFailure=true;
     assert.match(await submit("/dashboard",await researcherForm(failed.id),{confirmed:"yes"}),/error=/);
-    assert.equal(providerCalls,3); assert.equal(failed.execution_status,"failed");
+    assert.equal(providerCalls,3+(researcherRetry?1:0)); assert.equal(failed.execution_status,"failed");
     assert.equal(state.artifacts.filter((a)=>a.task_id===failed.id).length,0);
-    const providerDiagnostic=logs.split("\n").filter(l=>l.startsWith("agent_city.researcher ")).map(l=>JSON.parse(l.slice("agent_city.researcher ".length))).find(e=>e.stage==="generation"&&e.outcome==="failed");
+    const providerDiagnostic=logs.split("\n").filter(l=>l.startsWith("agent_city.researcher ")).map(l=>JSON.parse(l.slice("agent_city.researcher ".length))).find(e=>e.stage==="generation"&&e.outcome==="failed"&&e.httpStatus===429);
     assert.equal(providerDiagnostic?.httpStatus,429); assert.equal(providerDiagnostic?.failureClass,"quota_or_rate_limit");
     assert.ok(!logs.includes("private-provider-failure"));
     researcherProviderFailure=false;
     const interrupted=seedApprovedTask(); researcherStartFailure=true;
-    assert.match(await submit("/dashboard",await researcherForm(interrupted.id),{confirmed:"yes"}),/error=/); assert.equal(providerCalls,3);
+    assert.match(await submit("/dashboard",await researcherForm(interrupted.id),{confirmed:"yes"}),/error=/); assert.equal(providerCalls,3+(researcherRetry?1:0));
     researcherStartFailure=false;
     html=await (await request("/dashboard")).text();
     const recover=forms(html).find((f)=>f.includes('value="'+interrupted.execution_run_id+'"') && f.includes("Recover interrupted Researcher"));
     assert.match(await submit("/dashboard",recover),/error=/);
     state.runs.find((r)=>r.id===interrupted.execution_run_id).expires_at=new Date(Date.now()-1000).toISOString();
-    assert.equal(await submit("/dashboard",recover),"/dashboard"); assert.equal(interrupted.execution_status,"failed"); assert.equal(providerCalls,3);
+    assert.equal(await submit("/dashboard",recover),"/dashboard"); assert.equal(interrupted.execution_status,"failed"); assert.equal(providerCalls,3+(researcherRetry?1:0));
     assert.ok(await researcherForm(interrupted.id));
     assert.ok(!calls.some((c)=>c.path.endsWith("begin_chief_plan") || c.path.includes("openai-fixture")));
     console.log("PASS (M1.4 offline HTTP): explicit Researcher-only authorization, member denial, single Gemini call, real provenance/preview/model/time, acceptance/rejection, provider error and interruption recovery; planning disabled");
