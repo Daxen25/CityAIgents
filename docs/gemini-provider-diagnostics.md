@@ -19,7 +19,7 @@ or source files. The CLI does not load `.env` files, missions or Supabase config
 
 ```sh
 # Local process only; this does not change Vercel configuration.
-export GEMINI_MODEL=gemini-3.5-flash
+export GEMINI_MODEL=gemini-3.6-flash
 npm run diagnose:gemini
 npm run diagnose:gemini -- --help
 ```
@@ -73,7 +73,7 @@ reported separately with `verified`, `documented` or `unknown` evidence:
 - Synthetic success verifies only that tiny schema/request. It does not validate the full
   Chief of Staff/Researcher schemas, output quality, throughput or future availability.
   `resolvedModel` appears only when a successful generation returns a safe modelVersion.
-- A documented candidate's JSON example is labeled documented even if project visibility
+- The recommended candidate's documented compatibility is labeled documented even if project visibility
   is still unknown. Other model IDs are not assigned undocumented compatibility claims.
 - 429 verifies only that a quota/rate-limit response was observed. Quota capacity, limits,
   free-tier eligibility and prices cannot be established by models.get or one generation.
@@ -90,16 +90,19 @@ reported separately with `verified`, `documented` or `unknown` evidence:
 
 ## Model candidate and official evidence
 
-Recommend **`gemini-3.5-flash` as a documented non-preview, explicitly versioned candidate
+Recommend **`gemini-3.6-flash` as a documented non-preview, explicitly versioned candidate
 requiring project-specific verification**, not an automatic production replacement.
 A versioned identifier is not necessarily an immutable snapshot. The CLI has no default
 model; the candidate is referenced solely to label documented evidence.
 
 Official sources reviewed on 2026-10-22:
 
-- [Google model-list cookbook](https://github.com/google-gemini/cookbook/blob/main/quickstarts/Models.ipynb)
-  lists the candidate; [Google's structured JSON cookbook](https://github.com/google-gemini/cookbook/blob/archive/generate-content-api/quickstarts/JSON_mode.ipynb)
-  uses `gemini-3.5-flash` with JSON MIME type and a response schema.
+- [Official Gemini model guidance](https://ai.google.dev/gemini-api/docs/models) and
+  [deprecation guidance](https://ai.google.dev/gemini-api/docs/deprecations) identify
+  `gemini-3.6-flash` as the replacement for deprecated/redirected `gemini-3.5-flash`.
+  Use current [structured-output documentation](https://ai.google.dev/gemini-api/docs/structured-output)
+  alongside the selected model's capabilities. Older cookbook examples are not evidence
+  of the replacement model's project-specific availability or immutable identity.
 - [Google SDK API selection](https://github.com/googleapis/js-genai#api-selection) documents
   beta endpoints by default; [official REST field mappings](https://github.com/googleapis/js-genai/blob/main/src/converters/_models_converters.ts)
   map supportedGenerationMethods and token-limit metadata. [Models API](https://ai.google.dev/api/models)
@@ -110,7 +113,7 @@ Official sources reviewed on 2026-10-22:
   or other evidence here identifies an unsupported application parameter.
 - [Current rate-limit documentation](https://ai.google.dev/gemini-api/docs/rate-limits)
   and [pricing](https://ai.google.dev/gemini-api/docs/pricing) must be checked for the chosen
-  model and project/tier. No free-tier or pricing guarantee is made from cookbook examples.
+  model and project/tier. No free-tier or pricing guarantee is made from model documentation.
 
 `gemini-flash-latest` resolution remains unverified: no live API was called. A manual
 metadata check may show an alias resource; only a returned generation modelVersion offers

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { runGeminiDiagnostic } from "../scripts/lib/gemini-diagnostics";
 
-const env = { GEMINI_API_KEY: "fixture-private-key", GEMINI_MODEL: "gemini-3.5-flash", SUPABASE_URL: "https://private.invalid", SUPABASE_SERVICE_ROLE_KEY: "private-database-key" };
+const env = { GEMINI_API_KEY: "fixture-private-key", GEMINI_MODEL: "gemini-3.6-flash", SUPABASE_URL: "https://private.invalid", SUPABASE_SERVICE_ROLE_KEY: "private-database-key" };
 const generation = ["--generate", "--acknowledge-api-charges"];
-const body = { modelVersion: "gemini-3.5-flash-001", candidates: [{ finishReason: "STOP", content: { parts: [{ text: '{"status":"ok"}' }] } }] };
-const metadata = { name: "models/gemini-3.5-flash", version: "001", supportedGenerationMethods: ["generateContent", "countTokens"], inputTokenLimit: 1048576, outputTokenLimit: 65536 };
+const body = { modelVersion: "gemini-3.6-flash-001", candidates: [{ finishReason: "STOP", content: { parts: [{ text: '{"status":"ok"}' }] } }] };
+const metadata = { name: "models/gemini-3.6-flash", version: "001", supportedGenerationMethods: ["generateContent", "countTokens"], inputTokenLimit: 1048576, outputTokenLimit: 65536 };
 function fixture(response: () => Response = () => Response.json(metadata)) {
   const calls: Array<{ url: string; options: RequestInit | undefined }> = [];
   const transport: typeof fetch = async (url, options) => { calls.push({ url: String(url), options }); return response(); };
@@ -35,7 +35,7 @@ test("metadata check is one header-authenticated non-redirecting bounded model G
   const result = await runGeminiDiagnostic(["--metadata"], env, f);
   assert.equal(result.exitCode, 0); assert.equal(f.calls.length, 1);
   const { url, options } = f.calls[0];
-  assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash"); assert.equal(options?.method, "GET");
+  assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash"); assert.equal(options?.method, "GET");
   assert.equal(options?.redirect, "error"); assert.ok(options?.signal); assert.equal(new Headers(options?.headers).get("x-goog-api-key"), env.GEMINI_API_KEY);
   assert.equal(options?.body, undefined); assert.ok(!url.includes(env.GEMINI_API_KEY));
   assert.equal(result.result.generationRequests, 0); assert.equal(result.result.visibility.status, "verified");
@@ -53,12 +53,15 @@ test("metadata unsupported/malformed models are not treated as successful genera
   }
   const f = fixture(); const local = await runGeminiDiagnostic([], { ...env, GEMINI_MODEL: "gemini-future-unverified" }, f);
   assert.equal(local.exitCode, 0); assert.equal(local.result.structuredOutput.status, "unknown"); assert.equal(local.result.visibility.status, "unknown");
+  const legacy = await runGeminiDiagnostic([], { ...env, GEMINI_MODEL: "gemini-3.5-flash" }, f);
+  assert.equal(legacy.result.requestedModel, "gemini-3.5-flash");
+  assert.equal(legacy.result.structuredOutput.status, "unknown"); assert.equal(f.calls.length, 0);
 });
 
 test("explicit generation makes exactly one small synthetic structured request without metadata, tools, retry or database work", async () => {
   const f = fixture(() => Response.json(body)); const result = await runGeminiDiagnostic(generation, env, f);
   assert.equal(result.exitCode, 0); assert.equal(f.calls.length, 1); assert.equal(result.result.generationRequests, 1);
-  const call = f.calls[0]; assert.match(call.url, /\/gemini-3\.5-flash:generateContent$/); assert.equal(call.options?.method, "POST"); assert.equal(call.options?.redirect, "error");
+  const call = f.calls[0]; assert.match(call.url, /\/gemini-3\.6-flash:generateContent$/); assert.equal(call.options?.method, "POST"); assert.equal(call.options?.redirect, "error");
   assert.equal(new Headers(call.options?.headers).get("x-goog-api-key"), env.GEMINI_API_KEY); assert.ok(call.options?.signal);
   const request = JSON.parse(String(call.options?.body));
   assert.deepEqual(JSON.parse(request.contents[0].parts[0].text), { diagnostic: "synthetic-connectivity-check" });

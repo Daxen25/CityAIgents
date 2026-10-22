@@ -5,7 +5,7 @@ import { diagnosticError, PlanningFailure, GeminiHttpFailure } from "../../apps/
 
 const origin = "https://generativelanguage.googleapis.com/v1beta/models/";
 const timeoutMs = 10_000;
-const candidate = "gemini-3.5-flash";
+const candidate = "gemini-3.6-flash";
 const schema = z.strictObject({ status: z.enum(["ok"]) });
 const metadataSchema = z.object({
   name: z.string().max(150),
@@ -62,7 +62,7 @@ export async function runGeminiDiagnostic(
     result.failureClass = "invalid_model_configuration"; return done(1);
   }
   result.requestedModel = model;
-  if (model === candidate) result.structuredOutput = { status: "documented", value: "official_structured_json_example_not_project_verified" };
+  if (model === candidate) result.structuredOutput = { status: "documented", value: "official_model_documentation_not_project_verified" };
   if (result.operation === "local") { result.outcome = "valid"; return done(0); }
   const transport = dependencies.transport ?? fetch;
   const safeModel = (value: string | undefined) => value && value.length <= 100 && /^gemini-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value) && !value.includes(apiKey) ? value : undefined;
