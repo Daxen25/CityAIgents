@@ -13,7 +13,7 @@
     "dev": "npm run dev --workspace @agent-city/web",
     "build": "npm run build --workspace @agent-city/web",
     "start": "npm run start --workspace @agent-city/web",
-    "typecheck": "npm run typecheck --workspace @agent-city/web",
+    "typecheck": "npm run typecheck --workspace @agent-city/web && npm run typecheck:diagnostics",
     "test": "tsx --test packages/core/test/*.test.ts tests/*.test.ts",
     "test:planning-http": "node scripts/test-auth-persistence.mjs --planning && node scripts/test-auth-persistence.mjs --planning --openai && node scripts/test-auth-persistence.mjs --planning --persistence-failure && node scripts/test-auth-persistence.mjs --planning --finalizer-unavailable",
     "test:orchestration-http": "node scripts/test-auth-persistence.mjs --orchestration",
@@ -23,7 +23,9 @@
     "smoke": "node scripts/smoke.mjs",
     "verify:supabase": "node --use-env-proxy --import tsx scripts/verify-supabase.ts",
     "verify": "npm run verify:supabase",
-    "test:auth-persistence": "node scripts/test-auth-persistence.mjs"
+    "test:auth-persistence": "node scripts/test-auth-persistence.mjs",
+    "diagnose:gemini": "node --import tsx scripts/gemini-diagnostics.mts",
+    "typecheck:diagnostics": "tsc --noEmit --strict --skipLibCheck --target es2022 --lib esnext,dom --module esnext --moduleResolution bundler scripts/gemini-diagnostics.mts"
   },
   "devDependencies": {
     "tsx": "4.23.15",
