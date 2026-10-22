@@ -7,7 +7,8 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 const planningTest = process.argv.includes("--planning");
-const orchestrationTest = process.argv.includes("--orchestration");
+const researcherTest = process.argv.includes("--researcher");
+const orchestrationTest = process.argv.includes("--orchestration") || researcherTest;
 const persistenceFailure = process.argv.includes("--persistence-failure");
 const provider = process.argv.includes("--openai") ? "openai" : "gemini";
 const planningModel = provider === "gemini" ? "gemini-flash-latest" : "gpt-4.1-mini";
@@ -36,10 +37,12 @@ const calls = [];
 const planningMid = "55555555-5555-4555-8555-555555555555";
 const planningRid = "66666666-6666-4666-8666-666666666666";
 const offlinePlan = { summary: "Offline fixture plan", tasks: [{ title: "Review fixture evidence", suggested_agent_role: "researcher", expected_deliverable: "Human-reviewed fixture report" }, { title: "Review implementation proposal", suggested_agent_role: "developer", expected_deliverable: "Human-reviewed implementation outline" }], risks: ["Fixture evidence only"] };
+const offlineResearch = { summary:"Offline generated requirements brief", requirements:[{title:"Fixture requirement",description:"Derived from the approved task only",acceptance_criteria:["Owner reviews this brief"]}],assumptions:[],open_questions:["What constraints apply?"],limitations:["No browsing or external verification"],sources:[],verification:"not_externally_verified" };
+let researcherProviderFailure=false, researcherStartFailure=false;
 let providerCalls = 0;
 let planningHash;
 if (planningTest || orchestrationTest) {
-  state.artifacts = []; state.runs = []; state.tasks = []; state.task_plan_reviews = []; state.agents = [];
+  state.artifacts = []; state.runs = []; state.tasks = []; state.task_plan_reviews = []; state.agents = []; state.task_execution_reviews = []; state.task_execution_authorizations = [];
 }
 function persistFixturePlan(missionId, runId) {
   state.artifacts.push({ id: crypto.randomUUID(), mission_id: missionId, run_id: runId, kind: "chief_of_staff_plan", content: offlinePlan });
@@ -104,7 +107,14 @@ const fixture = createServer(async (req, res) => {
       return send(200, { choices: [{ finish_reason: "stop", message: { content: JSON.stringify(offlinePlan), refusal: null } }] });
     }
     if (url.pathname === "/gemini-fixture") {
-      assert.ok(planningTest);
+      assert.ok(planningTest || researcherTest);
+      if (body.generationConfig.responseJsonSchema.properties.requirements) {
+        assert.ok(researcherTest); assert.equal(req.headers["x-goog-api-key"],"offline-gemini-fixture");
+        assert.equal(body.generationConfig.maxOutputTokens,4000); assert.equal(body.tools,undefined);
+        providerCalls++;
+        if (researcherProviderFailure) return send(429,{error:{message:"private-provider-failure"}});
+        return send(200,{modelVersion:"gemini-flash-fixture",candidates:[{finishReason:"STOP",content:{parts:[{text:JSON.stringify(offlineResearch)}]}}]});
+      }
       assert.equal(provider, "gemini");
       assert.equal(req.headers["x-goog-api-key"], "offline-gemini-fixture");
       assert.equal(body.generationConfig.responseMimeType, "application/json");
@@ -123,6 +133,27 @@ const fixture = createServer(async (req, res) => {
       state.missions.find((m) => m.id === planningMid).status = "awaiting_approval";
       persistFixturePlan(planningMid, planningRid);
       return send(200, null);
+    }
+    if (["/rest/v1/rpc/start_researcher_execution","/rest/v1/rpc/finish_researcher_execution"].includes(url.pathname)) {
+      assert.ok(researcherTest); assert.equal(req.headers.authorization,"Bearer sb_secret_m11_fixture");
+      const run=state.runs.find((r)=>r.id===body.rid && r.purpose==="researcher");
+      const task=state.tasks.find((t)=>t.id===run?.task_id);
+      if (!run || run.lease_hash!==body.token_hash || run.status!=="running") return send(400,{code:"P0001",message:"Invalid execution lease"});
+      if (url.pathname.endsWith("start_researcher_execution")) {
+        assert.deepEqual(Object.keys(body).sort(),["rid","token_hash"]);
+        if (researcherStartFailure) return send(503,{code:"PGRST202",message:"offline-start-failure"});
+        assert.equal(task.execution_status,"authorized"); task.execution_status="running"; run.started_at=new Date().toISOString();
+      } else {
+        assert.deepEqual(Object.keys(body).sort(),["doc","error_code","model_version","rid","token_hash"]);
+        assert.equal(task.execution_status,"running");
+        run.ended_at=new Date().toISOString(); run.failure_code=body.error_code; run.resolved_model=body.model_version;
+        if (body.error_code) { assert.equal(body.doc,null); run.status="failed"; task.execution_status="failed"; }
+        else {
+          assert.deepEqual(body.doc,offlineResearch); run.status="completed"; task.execution_status="pending_review";
+          state.artifacts.push({id:crypto.randomUUID(),workspace_id:wid,mission_id:task.mission_id,run_id:run.id,task_id:task.id,kind:"researcher_document",content:body.doc});
+        }
+      }
+      return send(200,null);
     }
     if (req.headers.authorization !== `Bearer ${activeToken}` || !activeToken)
       return send(401, { code: "42501", message: "Authentication required" });
@@ -181,6 +212,35 @@ const fixture = createServer(async (req, res) => {
         m.execution_mode = "chief_of_staff";
         state.runs.push({ id: planningRid, mission_id: planningMid, status: "running", failure_code: null, expires_at: new Date(Date.now()+120000).toISOString() });
         return send(200, { runId: planningRid, title: m.title, objective: m.objective });
+      }
+      if (rpc === "authorize_researcher_execution") {
+        assert.deepEqual(Object.keys(body).sort(),["confirmed","request_id","selected_model","tid","token_hash"]);
+        assert.equal(body.confirmed,true); assert.equal(body.selected_model,"gemini-flash-latest");
+        const task=state.tasks.find((t)=>t.id===body.tid);
+        if (!state.workspace_members.some((m)=>m.user_id===uid && m.workspace_id===task?.workspace_id && m.role==="owner")) return send(403,{code:"42501",message:"Owner required"});
+        if (task.status!=="approved" || task.suggested_agent_role!=="researcher" || !["not_authorized","failed"].includes(task.execution_status??"not_authorized") || state.task_execution_authorizations.some((a)=>a.request_id===body.request_id)) return send(400,{code:"P0001",message:"Task not eligible"});
+        const authorization={id:crypto.randomUUID(),task_id:task.id,request_id:body.request_id,authorized_by:uid}; state.task_execution_authorizations.push(authorization);
+        const run={id:crypto.randomUUID(),mission_id:task.mission_id,task_id:task.id,purpose:"researcher",adapter:"gemini",status:"running",model:body.selected_model,lease_hash:body.token_hash,started_at:new Date().toISOString(),ended_at:null,expires_at:new Date(Date.now()+120000).toISOString(),failure_code:null};
+        state.runs.push(run); task.execution_status="authorized"; task.execution_run_id=run.id;
+        return send(200,{runId:run.id,objective:state.missions.find((m)=>m.id===task.mission_id).objective,title:task.title,expectedDeliverable:task.expected_deliverable});
+      }
+      if (rpc === "recover_researcher_execution") {
+        const run=state.runs.find((r)=>r.id===body.rid && r.purpose==="researcher");
+        if (!run || run.status!=="running" || Date.parse(run.expires_at)>Date.now()) return send(400,{code:"P0001",message:"No expired execution"});
+        run.status="failed"; run.ended_at=new Date().toISOString(); run.failure_code="interrupted";
+        state.tasks.find((t)=>t.id===run.task_id).execution_status="failed";
+        return send(200,null);
+      }
+      if (rpc === "review_researcher_deliverable") {
+        assert.deepEqual(Object.keys(body).sort(),["confirmed","decision","request_id","rid"]);
+        const run=state.runs.find((r)=>r.id===body.rid && r.purpose==="researcher");
+        if (!state.workspace_members.some((m)=>m.user_id===uid && m.workspace_id===wid && m.role==="owner")) return send(403,{code:"42501",message:"Owner required"});
+        const previous=state.task_execution_reviews.find((r)=>r.run_id===body.rid);
+        if (previous) return previous.request_id===body.request_id && previous.decision===body.decision ? send(200,previous.id) : send(400,{code:"P0001",message:"Already reviewed"});
+        if (!run || run.status!=="completed" || body.confirmed!==true) return send(400,{code:"P0001",message:"Result not pending review"});
+        const review={id:crypto.randomUUID(),run_id:run.id,decision:body.decision,request_id:body.request_id,decided_by:uid,decided_at:new Date().toISOString()};
+        state.task_execution_reviews.push(review); state.tasks.find((t)=>t.id===run.task_id).execution_status=body.decision;
+        return send(200,review.id);
       }
       if (rpc === "review_task_plan") {
         assert.deepEqual(Object.keys(body).sort(), ["accepted_ids","confirmed","decision","mid","request_id","rid"]);
@@ -263,7 +323,13 @@ const fixture = createServer(async (req, res) => {
         { key: "developer", version: 1, name: "Fixture Developer", description: "Review-only developer" },
       ]);
     assert.ok(Object.hasOwn(state, table), "Unexpected table " + table);
-    return send(200, state[table]);
+    let rows=state[table];
+    if (table==="runs") {
+      if (url.searchParams.get("purpose")==="eq.researcher") rows=rows.filter((r)=>r.purpose==="researcher");
+      if (url.searchParams.get("task_id")==="is.null") rows=rows.filter((r)=>!r.task_id);
+    }
+    if (table==="artifacts" && url.searchParams.get("kind")) rows=rows.filter((a)=>"eq."+a.kind===url.searchParams.get("kind"));
+    return send(200, rows);
   } catch {
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ message: "Fixture contract assertion failed" }));
@@ -282,7 +348,7 @@ const jar = new Map();
 const app = spawn(
   process.execPath,
   [
-    ...(planningTest ? ["--import", root + "tests/fixtures/openai-offline.mjs"] : []),
+    ...((planningTest || researcherTest) ? ["--import", root + "tests/fixtures/openai-offline.mjs"] : []),
     root + "node_modules/next/dist/bin/next",
     "dev",
     "--hostname",
@@ -295,13 +361,14 @@ const app = spawn(
     env: {
       ...process.env,
       AGENT_CITY_MODE: "supabase",
+      AGENT_CITY_RESEARCHER_EXECUTION_ENABLED: researcherTest ? "true" : "false",
       AGENT_CITY_AI_PLANNING_ENABLED: planningTest ? "true" : "false",
       AGENT_CITY_AI_PROVIDER: provider,
-      GEMINI_API_KEY: orchestrationTest ? "" : "offline-gemini-fixture",
+      GEMINI_API_KEY: (orchestrationTest && !researcherTest) ? "" : "offline-gemini-fixture",
       GEMINI_MODEL: "gemini-flash-latest",
-      OPENAI_API_KEY: orchestrationTest ? "" : "offline-openai-fixture",
+      OPENAI_API_KEY: (orchestrationTest && !researcherTest) ? "" : "offline-openai-fixture",
       OPENAI_MODEL: "gpt-4.1-mini",
-      SUPABASE_SERVICE_ROLE_KEY: orchestrationTest ? "" : "sb_secret_m11_fixture",
+      SUPABASE_SERVICE_ROLE_KEY: (orchestrationTest && !researcherTest) ? "" : "sb_secret_m11_fixture",
       AGENT_CITY_TEST_OPENAI_URL: supabaseURL,
       SUPABASE_URL: supabaseURL,
       SUPABASE_PUBLISHABLE_KEY: "sb_publishable_m04_fixture_only",
@@ -554,6 +621,61 @@ try {
     assert.equal(providerCalls,0);
     assert.ok(!calls.some((c) => c.path.endsWith("finish_chief_plan") || c.path.endsWith("begin_chief_plan")));
     console.log("PASS (M1.3 HTTP): individual acceptance/rejection, confirmation, member/session denial, assignment/history, idempotency and whole-plan rejection with AI disabled and no privileged key");
+  }
+  if (researcherTest) {
+    const task=state.tasks.find((t)=>t.mission_id===planningMid && t.status==="approved");
+    async function researcherForm(taskId) {
+      const html=await (await request("/dashboard")).text();
+      return forms(html).find((f)=>f.includes('name="taskId" value="'+taskId+'"'));
+    }
+    let form=await researcherForm(task.id); assert.ok(form);
+    assert.match(await submit("/dashboard",form,{confirmed:""}),/error=/); assert.equal(providerCalls,0);
+    state.workspace_members[0].role="member";
+    assert.equal(await researcherForm(task.id),undefined);
+    assert.match(await submit("/dashboard",form,{confirmed:"yes"}),/error=/); assert.equal(providerCalls,0);
+    state.workspace_members[0].role="owner";
+    assert.equal(await submit("/dashboard",form,{confirmed:"yes"}),"/dashboard"); assert.equal(providerCalls,1);
+    assert.equal(task.status,"approved"); assert.equal(task.execution_status,"pending_review");
+    assert.match(await submit("/dashboard",form,{confirmed:"yes"}),/error=/); assert.equal(providerCalls,1);
+    html=await (await request("/dashboard")).text();
+    assert.match(html,/Offline generated requirements brief/); assert.match(html,/not externally verified/); assert.match(html,/gemini-flash-latest/); assert.match(html,/gemini-flash-fixture/); assert.match(html,/elapsed at refresh/);
+    assert.doesNotMatch(html,/offline-gemini-fixture|sb_secret_m11_fixture/);
+    const run=state.runs.find((r)=>r.id===task.execution_run_id); assert.ok(!html.includes(run.lease_hash));
+    const accept=forms(html).find((f)=>f.includes('value="'+run.id+'"') && f.includes('value="accepted"'));
+    assert.match(await submit("/dashboard",accept,{confirmed:""}),/error=/);
+    assert.equal(await submit("/dashboard",accept,{confirmed:"yes"}),"/dashboard"); assert.equal(task.execution_status,"accepted");
+    assert.equal(await submit("/dashboard",accept,{confirmed:"yes"}),"/dashboard"); assert.equal(state.task_execution_reviews.length,1);
+    function seedApprovedTask() {
+      const missionId=crypto.randomUUID(), planRun=crypto.randomUUID(), reviewId=crypto.randomUUID();
+      state.missions.push({...state.missions.find((m)=>m.id===task.mission_id),id:missionId});
+      state.runs.push({id:planRun,mission_id:missionId,purpose:"mission",status:"completed"});
+      persistFixturePlan(missionId,planRun);
+      const proposed=state.tasks.filter((t)=>t.mission_id===missionId);
+      proposed.forEach((t,i)=>{t.status=i===0?"approved":"rejected";t.agent_id=i===0?task.agent_id:null;t.review_id=reviewId;t.execution_status="not_authorized";t.execution_run_id=null;});
+      state.task_plan_reviews.push({id:reviewId,mission_id:missionId,run_id:planRun,decision:"approved",accepted_task_ids:[proposed[0].id],decided_by:uid,decided_at:new Date().toISOString()});
+      return proposed[0];
+    }
+    const rejected=seedApprovedTask(); form=await researcherForm(rejected.id);
+    assert.equal(await submit("/dashboard",form,{confirmed:"yes"}),"/dashboard"); assert.equal(providerCalls,2);
+    html=await (await request("/dashboard")).text();
+    const reject=forms(html).find((f)=>f.includes('value="'+rejected.execution_run_id+'"') && f.includes('value="rejected"'));
+    assert.equal(await submit("/dashboard",reject,{confirmed:"yes"}),"/dashboard"); assert.equal(rejected.execution_status,"rejected");
+    const failed=seedApprovedTask(); researcherProviderFailure=true;
+    assert.match(await submit("/dashboard",await researcherForm(failed.id),{confirmed:"yes"}),/error=/);
+    assert.equal(providerCalls,3); assert.equal(failed.execution_status,"failed");
+    assert.equal(state.artifacts.filter((a)=>a.task_id===failed.id).length,0);
+    researcherProviderFailure=false;
+    const interrupted=seedApprovedTask(); researcherStartFailure=true;
+    assert.match(await submit("/dashboard",await researcherForm(interrupted.id),{confirmed:"yes"}),/error=/); assert.equal(providerCalls,3);
+    researcherStartFailure=false;
+    html=await (await request("/dashboard")).text();
+    const recover=forms(html).find((f)=>f.includes('value="'+interrupted.execution_run_id+'"') && f.includes("Recover interrupted Researcher"));
+    assert.match(await submit("/dashboard",recover),/error=/);
+    state.runs.find((r)=>r.id===interrupted.execution_run_id).expires_at=new Date(Date.now()-1000).toISOString();
+    assert.equal(await submit("/dashboard",recover),"/dashboard"); assert.equal(interrupted.execution_status,"failed"); assert.equal(providerCalls,3);
+    assert.ok(await researcherForm(interrupted.id));
+    assert.ok(!calls.some((c)=>c.path.endsWith("begin_chief_plan") || c.path.includes("openai-fixture")));
+    console.log("PASS (M1.4 offline HTTP): explicit Researcher-only authorization, member denial, single Gemini call, real provenance/preview/model/time, acceptance/rejection, provider error and interruption recovery; planning disabled");
   }
   const cookieName = [...jar.keys()].find((k) => k.endsWith("-auth-token"));
   assert.ok(cookieName, "SSR session cookie");

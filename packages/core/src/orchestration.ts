@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ExecutionState } from "./researcher";
 
 export const planReviewInput = z.strictObject({
   missionId: z.uuid(), runId: z.uuid(), requestId: z.uuid(),
@@ -18,6 +19,7 @@ export interface ReviewedTask {
   position: number; status: "proposed" | "approved" | "rejected";
   agentId: string | null; agentDefinitionKey: string | null; agentName: string | null;
   reviewId: string | null;
+  executionStatus?: ExecutionState; executionRunId?: string | null;
 }
 export interface PlanReview {
   id: string; missionId: string; runId: string;

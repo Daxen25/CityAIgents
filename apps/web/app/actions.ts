@@ -10,6 +10,7 @@ import { supabase } from "@/lib/supabase";
 import { createMission, createWorkspace, transition } from "@/lib/repository";
 import { planMission, recoverPlan } from "@/lib/planning";
 import { reviewTaskPlan } from "@/lib/orchestration";
+import { authorizeResearcher, recoverResearcher, reviewResearcher } from "@/lib/researcher";
 export async function login(form: FormData) {
   if (mode() === "mock") {
     (await cookies()).set("city-local", localToken(), {
@@ -107,4 +108,17 @@ export async function finalizeTaskPlan(form: FormData) {
       confirmed: form.get("confirmed") === "yes",
     });
   });
+}
+
+export async function authorizeResearcherTask(form: FormData) {
+  await requireUser();
+  await mutation(() => authorizeResearcher({ taskId:form.get("taskId"),requestId:form.get("requestId"),confirmed:form.get("confirmed")==="yes" }));
+}
+export async function recoverResearcherTask(form: FormData) {
+  await requireUser();
+  await mutation(() => recoverResearcher(z.uuid().parse(form.get("runId"))));
+}
+export async function reviewResearcherResult(form: FormData) {
+  await requireUser();
+  await mutation(() => reviewResearcher({ runId:form.get("runId"),decision:form.get("decision"),requestId:form.get("requestId"),confirmed:form.get("confirmed")==="yes" }));
 }

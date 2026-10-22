@@ -55,7 +55,7 @@ export async function missionPlans(hasPlanningMissions = false) {
   const [artifacts, runs] = await Promise.all([
     db.from("artifacts").select("id,mission_id,run_id,content").eq("kind", "chief_of_staff_plan"),
     // Never select the lease capability, key, or privileged client metadata into UI data.
-    db.from("runs").select("id,mission_id,status,failure_code,expires_at").in("adapter", ["openai", "gemini"]),
+    db.from("runs").select("id,mission_id,status,failure_code,expires_at").in("adapter", ["openai", "gemini"]).is("task_id", null),
   ]);
   return { artifacts: checked(artifacts) ?? [], runs: checked(runs) ?? [] };
 }

@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import type { PlanReview, ReviewedTask } from "@agent-city/core";
+import type { PlanReview, ReviewedTask, ResearcherRun, ResearcherArtifact, ResearcherReview } from "@agent-city/core";
 import { finalizeTaskPlan } from "@/app/actions";
+import { ResearcherExecution } from "./researcher-execution";
 import { MissionPlan } from "./mission-plan";
 import { Button } from "./ui/button";
 
-export function TaskPlanReview({ content, missionId, runId, missionStatus, tasks, review, owner }: {
+export function TaskPlanReview({ content, missionId, runId, missionStatus, tasks, review, owner, execution }: {
   content: unknown; missionId: string; runId: string; missionStatus: string;
   tasks: ReviewedTask[]; review?: PlanReview; owner: boolean;
+  execution: { enabled: boolean; runs: ResearcherRun[]; artifacts: ResearcherArtifact[]; reviews: ResearcherReview[] };
 }) {
   const canReview = owner && missionStatus === "awaiting_approval" && !review && tasks.length > 0;
   const approved = tasks.filter((task) => task.status === "approved").length;
@@ -24,13 +26,14 @@ export function TaskPlanReview({ content, missionId, runId, missionStatus, tasks
       </label> : <p className="font-semibold">{task.title}</p>}
       <p className="text-sm">Proposed role: {task.suggestedAgentRole}</p>
       <p className="whitespace-pre-wrap text-sm">Expected deliverable: {task.expectedDeliverable}</p>
-      <p className="text-sm">Status: {task.status} · {task.status === "proposed" ? "Proposal only" : "Review recorded"} · not executable</p>
+      <p className="text-sm">Status: {task.status} · {task.status === "proposed" ? "Proposal only" : "Review recorded"} · not executable automatically</p>
       {task.agentId && <p className="text-sm">Assigned: {task.agentName ?? task.agentDefinitionKey} ({task.agentDefinitionKey})</p>}
+      <ResearcherExecution task={task} owner={owner} enabled={execution.enabled} runs={execution.runs.filter((r) => r.taskId===task.id)} artifacts={execution.artifacts.filter((a) => a.taskId===task.id)} reviews={execution.reviews} />
       {task.reviewId && <p className="text-xs text-slate-500">Decision history: {task.status} · review {task.reviewId}</p>}
     </li>)}
   </ol>;
   return <MissionPlan content={content} reviewed={Boolean(review)}>
-    <p className="mb-4 text-sm">Mission progress: {approved} approved, {rejected} rejected, {tasks.length-approved-rejected} proposed. Executed: 0. Execution unavailable.</p>
+    <p className="mb-4 text-sm">Mission progress: {approved} approved, {rejected} rejected, {tasks.length-approved-rejected} proposed. Generated deliverables: {execution.artifacts.length}. Accepted deliverables: {execution.reviews.filter((r) => r.decision==="accepted").length}. No automatic execution.</p>
     {!tasks.length && <p role="alert">Proposal records are unavailable. Plan review is blocked.</p>}
     {canReview ? <>
       <form action={finalizeTaskPlan}>
