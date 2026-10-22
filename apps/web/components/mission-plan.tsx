@@ -18,6 +18,6 @@ export function MissionPlan({ content, children, reviewed = false }: { content: 
     </ol>}
     {plan.risks.length > 0 && <><h5 className="mt-4 font-semibold">Risks</h5>
       <ul className="list-disc pl-5">{plan.risks.map((risk, i) => <li key={i}>{risk}</li>)}</ul></>}
-    <p className="mt-4 text-sm">{reviewed ? "Task approval is recorded. Execution remains unavailable and requires a separate supervised execution approval." : "Review every proposal before any further work. Task execution is unavailable in this milestone."}</p>
+    <p className="mt-4 text-sm">{reviewed ? "Task approval is recorded. Any Researcher execution requires separate owner authorization and human deliverable review. Other agent execution is unavailable." : "Review every proposal before any further work. Task execution is unavailable in this milestone."}</p>
   </section>;
 }

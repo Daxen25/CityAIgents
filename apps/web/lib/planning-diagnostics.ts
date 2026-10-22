@@ -1,5 +1,5 @@
 // Only the server-only planning binding writes these diagnostics. Never serialize raw errors.
-export type PlanningStage = "claim" | "generation" | "finalize_plan" | "finalize_failure" | "recover";
+export type PlanningStage = "claim" | "generation" | "finalize_plan" | "finalize_failure" | "recover" | "start" | "review";
 export type PlanningDiagnostic = {
   stage: PlanningStage;
   outcome: "started" | "succeeded" | "failed";
@@ -27,10 +27,10 @@ export class PlanningRpcError extends Error {
 export function diagnosticError(error: unknown): Pick<PlanningDiagnostic, "code" | "httpStatus"> {
   return error instanceof PlanningRpcError ? { code: error.code, httpStatus: error.httpStatus } : {};
 }
-export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: string) => void = console.info) {
+export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: string) => void = console.info, topic: "planning" | "researcher" = "planning") {
   // Reconstruct a whitelist, even if an accidental caller supplies extra properties.
   const safe = {
-    stage: ["claim", "generation", "finalize_plan", "finalize_failure", "recover"].includes(event.stage) ? event.stage : "unknown",
+    stage: ["claim", "generation", "finalize_plan", "finalize_failure", "recover", "start", "review"].includes(event.stage) ? event.stage : "unknown",
     outcome: ["started", "succeeded", "failed"].includes(event.outcome) ? event.outcome : "unknown",
     provider: event.provider === "gemini" || event.provider === "openai" ? event.provider : undefined,
     runId: typeof event.runId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(event.runId) ? event.runId : undefined,
@@ -39,5 +39,5 @@ export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: s
     httpStatus: safeStatus(event.httpStatus),
   };
   // A diagnostics sink failure must never change authorization, persistence or retry behavior.
-  try { write(`agent_city.planning ${JSON.stringify(safe)}`); } catch { /* best effort */ }
+  try { write(`agent_city.${topic === "researcher" ? "researcher" : "planning"} ${JSON.stringify(safe)}`); } catch { /* best effort */ }
 }

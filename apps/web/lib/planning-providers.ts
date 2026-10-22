@@ -1,4 +1,4 @@
-// Provider transports receive server configuration only from server-only planning.ts.
+// Provider transports receive configuration only from server-only planning/researcher bindings.
 // No environment reads, client exports, retries, tools, or provider fallback.
 import OpenAI from "openai";
 import { z } from "zod";
@@ -47,11 +47,12 @@ export async function generateOpenAIPlan(
 
 // Native fetch performs exactly one generateContent request, with no SDK retry layer.
 // responseJsonSchema uses the existing schema; local and SQL validation remain mandatory.
-export async function generateGeminiPlan(
+export async function generateGeminiStructured<T>(
   config: Pick<PlanningConfig, "apiKey" | "model">,
-  mission: { title: string; objective: string },
+  input: unknown, instruction: string, schema: z.ZodType<T>,
   transport: typeof fetch = fetch,
-): Promise<Plan> {
+  limits: { timeoutMs: number; maxOutputTokens: number; onModelVersion?: (model: string) => void } = { timeoutMs: 45_000, maxOutputTokens: 6000 },
+): Promise<T> {
   let response: Response;
   let body: unknown;
   try {
@@ -59,14 +60,14 @@ export async function generateGeminiPlan(
       method: "POST",
       redirect: "error", // Never forward a credential to a redirected endpoint.
       headers: { "Content-Type": "application/json", "x-goog-api-key": config.apiKey },
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(limits.timeoutMs),
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: planningInstruction }] },
-        contents: [{ role: "user", parts: [{ text: JSON.stringify(mission) }] }],
+        systemInstruction: { parts: [{ text: instruction }] },
+        contents: [{ role: "user", parts: [{ text: JSON.stringify(input) }] }],
         generationConfig: {
           responseMimeType: "application/json",
-          responseJsonSchema: z.toJSONSchema(planSchema),
-          maxOutputTokens: 6000,
+          responseJsonSchema: z.toJSONSchema(schema),
+          maxOutputTokens: limits.maxOutputTokens,
           candidateCount: 1,
         },
       }),
@@ -93,8 +94,19 @@ export async function generateGeminiPlan(
     throw new PlanningFailure("invalid_output");
   try {
     const text = envelope.data.candidates[0].content.parts.filter((part) => !part.thought).map((part) => part.text).join("");
-    return planSchema.parse(JSON.parse(text));
+    const doc = schema.parse(JSON.parse(text));
+    const version = z.object({ modelVersion: z.string().max(100).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/) }).safeParse(body);
+    if (version.success) limits.onModelVersion?.(version.data.modelVersion);
+    return doc;
   } catch { throw new PlanningFailure("invalid_output"); }
+}
+
+export async function generateGeminiPlan(
+  config: Pick<PlanningConfig, "apiKey" | "model">,
+  mission: { title: string; objective: string },
+  transport: typeof fetch = fetch,
+): Promise<Plan> {
+  return generateGeminiStructured(config, mission, planningInstruction, planSchema, transport);
 }
 
 export async function generatePlan(config: PlanningConfig, mission: { title: string; objective: string }): Promise<Plan> {

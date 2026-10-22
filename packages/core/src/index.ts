@@ -129,3 +129,5 @@ export function mockResult() {
       "Mock lifecycle completed. No agent work or external actions were performed.",
   };
 }
+
+export { researchDocumentSchema, researcherAuthorizationInput, researcherReviewInput, type ResearchDocument, type ExecutionState, type ResearcherRun, type ResearcherArtifact, type ResearcherReview } from "./researcher";

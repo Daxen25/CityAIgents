@@ -4,6 +4,7 @@ import { nextStatus, type Action } from "@agent-city/core";
 import { newMission, advanceMission, newWorkspace, generateChiefPlan, recoverChiefPlan } from "../actions";
 import { missionPlans, planningEnabled } from "@/lib/planning";
 import { TaskPlanReview } from "@/components/task-plan-review";
+import { researcherEnabled, researcherSnapshot } from "@/lib/researcher";
 import { orchestrationSnapshot } from "@/lib/orchestration";
 import { Button } from "@/components/ui/button";
 export const maxDuration = 60;
@@ -16,6 +17,7 @@ export default async function Dashboard({
   const data = await snapshot(user);
   const planning = await missionPlans(data.missions.some((m) => m.executionMode === "chief_of_staff"));
   const orchestration = await orchestrationSnapshot(planning.artifacts.length > 0);
+  const execution = await researcherSnapshot(orchestration.tasks.some((t) => t.status==="approved"));
   const aiEnabled = planningEnabled();
   const { error } = await searchParams;
   return (
@@ -199,6 +201,7 @@ export default async function Dashboard({
                     {planning.artifacts.filter((artifact) => artifact.mission_id === m.id).map((artifact) => <TaskPlanReview key={artifact.id} content={artifact.content} missionId={m.id} runId={artifact.run_id} missionStatus={m.status}
                       tasks={orchestration.tasks.filter((task) => task.missionId === m.id && task.planRunId === artifact.run_id)}
                       review={orchestration.reviews.find((review) => review.missionId === m.id && review.runId === artifact.run_id)}
+                      execution={{ runs:execution.runs.filter((r) => r.missionId===m.id), artifacts:execution.artifacts.filter((a) => orchestration.tasks.some((t) => t.id===a.taskId && t.missionId===m.id)), reviews:execution.reviews.filter((r) => execution.runs.some((run) => run.id===r.runId && run.missionId===m.id)), enabled:researcherEnabled() }}
                       owner={data.members.some((member) => member.workspaceId === m.workspaceId && member.userId === user && member.role === "owner")} />)}
                   </>}
                   {m.status === "completed" && (
