@@ -152,3 +152,57 @@ request-specific resolved-model evidence. Failure to return it must remain unkno
 All development metadata/generation tests mock HTTP, including CLI subprocesses with
 network blocked. Real project access, alias resolution, provider latency, billing and
 hosted acceptance remain unverified until the operator performs these manual steps.
+
+## GitHub-only diagnostics (no local terminal)
+
+After this workflow is reviewed and merged into `main`, repository maintainers can run
+`.github/workflows/gemini-diagnostics.yml` entirely through GitHub. This delivery does not
+merge it or launch a workflow. It uses the same CLI, not a public diagnostic endpoint.
+
+Set the key in GitHub:
+
+1. Open **Daxen25/CityAIgents → Settings → Secrets and variables → Actions**.
+2. Under **Repository secrets**, click **New repository secret**.
+3. Set **Name** to `GEMINI_API_KEY`, paste the Gemini API key into **Secret**, and click
+   **Add secret**. For an existing secret, use its edit button to update it.
+4. Never put the key in a workflow input, model field, repository file or issue. Repository
+   secrets require appropriate repository administration permissions. This is an Actions
+   secret; it does not update Vercel or any production environment.
+
+Launch model metadata verification:
+
+1. Open **Actions → Gemini diagnostics → Run workflow**.
+2. Set **Use workflow from** to **main**. Other branches/forks are intentionally skipped.
+3. Set **operation** to **metadata** and **GEMINI_MODEL** to `gemini-3.6-flash` (or another
+   explicitly chosen model). Leave **acknowledge_api_charges** unchecked.
+4. Click **Run workflow**, open the new run, and inspect its **Summary**. The **diagnose**
+   job's **Run once and publish sanitized diagnostics** step shows the same safe JSON.
+5. A successful metadata result verifies visibility and declared generation support only.
+   Quota/free-tier/pricing and full application-schema compatibility remain separate.
+   Provider errors fail the job but retain sanitized results in the summary.
+
+The default **validate** operation makes zero Gemini requests; checkout, Node setup and
+locked dependency installation still access GitHub/npm. To run a synthetic generation,
+start a **new** dispatch, choose **generate**, and explicitly check
+**acknowledge_api_charges**. This permits one potentially billed request, even if it fails
+or times out. Generation without acknowledgment is rejected before the secret-bearing
+step. For validate/metadata, the acknowledgment must be unchecked. There is no model
+fallback, automatic retry or Agent City attempt consumption. GitHub **Re-run jobs** is
+intentionally skipped: use a new dispatch and fresh acknowledgment instead.
+
+Security: only `workflow_dispatch`, canonical repository, `main`, first run attempt and
+an exact trusted dispatch commit are allowed. There are no PR/push/scheduled triggers.
+The token has only `contents: read`; checkout does not persist credentials. Third-party
+actions are pinned to verified commit SHAs. Inputs are read from GitHub's event file and
+validated without the API key, never inserted into shell text or echoed as job env.
+Dependencies use `npm ci --ignore-scripts`; the Gemini secret exists only in the final
+step. The adapter invokes fixed npm argument arrays without a shell, captures all process
+stdout/stderr, and reconstructs allowlisted results for logs and summary. It never forwards
+raw process output/errors or provider content, including on failure. Input/dependency
+failures show fixed messages without making diagnostic requests.
+
+Dispatch rights and trusted-main review remain repository access-control responsibilities:
+protect main and grant write/secret-management permissions only to trusted maintainers.
+There are no Supabase credentials, mission operations, deployments or production-setting
+writes in this workflow. Validation/testing here is offline; hosted Actions/provider
+execution remains unverified until a maintainer performs an authorized manual dispatch.
