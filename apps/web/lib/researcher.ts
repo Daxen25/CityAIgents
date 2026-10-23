@@ -2,33 +2,38 @@ import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import { researcherDiagnosticsSchema, researcherReviewInput, type ResearcherRun, type ResearcherArtifact, type ResearcherReview } from "@agent-city/core";
+import { researcherDiagnosticsSchema,webDiagnosticsSchema,researcherAuthorizationInput, researcherReviewInput, type ResearcherRun, type ResearcherArtifact, type ResearcherReview } from "@agent-city/core";
 import { requireUser } from "./auth";
 import { mode, supabaseConfig } from "./config";
 import { supabase } from "./supabase";
 import { executeResearcher, generateResearchDocument, researcherConfig } from "./researcher-engine";
 import { logPlanningDiagnostic, PlanningRpcError, diagnosticError } from "./planning-diagnostics";
+import {webResearchConfig,generateWebResearch} from "./web-research";
+export function researcherWebEnabled(){return researcherEnabled()&&process.env.AGENT_CITY_RESEARCHER_WEB_ENABLED==="true"&&!!process.env.TAVILY_API_KEY?.trim();}
 export function researcherEnabled() { return mode()==="supabase" && process.env.AGENT_CITY_RESEARCHER_EXECUTION_ENABLED==="true"; }
 function checked<T>(result: { data: T; error: unknown; status?: number }): T {
   if (result.error) throw new PlanningRpcError(result.error,result.status);
   return result.data;
 }
 export async function authorizeResearcher(input: unknown) {
+  const request=researcherAuthorizationInput.parse(input);
+  const web=request.mode==="web";let searchKey:string;
   let trusted: SupabaseClient;
   const actionSignal=AbortSignal.timeout(55_000);
   const bounded=(ms:number)=>AbortSignal.any([actionSignal,AbortSignal.timeout(ms)]);
   await executeResearcher(input,{
     config: () => {
       const config=researcherConfig(process.env);
+      if(web)searchKey=webResearchConfig(process.env);
       trusted=createClient(supabaseConfig().url,config.serviceKey,{ auth: { persistSession:false,autoRefreshToken:false,detectSessionInUrl:false } });
       return config;
     },
     authenticate: async () => { await requireUser(); },
     capability: () => ({ hash:createHash("sha256").update(randomBytes(32)).digest("hex") }),
-    claim: async (tid,token_hash,selected_model,request_id) => checked(await (await supabase()).rpc("authorize_researcher_execution",{ tid,token_hash,selected_model,request_id,confirmed:true }).retry(false).abortSignal(bounded(5_000))),
+    claim: async (tid,token_hash,selected_model,request_id) => checked(await (await supabase()).rpc("authorize_researcher_execution_v2",{ tid,token_hash,selected_model,request_id,confirmed:true,research_mode:web?"web":"brief" }).retry(false).abortSignal(bounded(5_000))),
     start: async (rid,token_hash) => { checked(await trusted.rpc("start_researcher_execution",{ rid,token_hash }).retry(false).abortSignal(bounded(5_000))); },
-    generate: (config,input,onModelVersion,options) => generateResearchDocument(config,input,fetch,onModelVersion,options),
-    finish: async (rid,token_hash,doc,error_code,model_version,execution_metadata) => { checked(await trusted.rpc("finish_researcher_execution_with_diagnostics",{ rid,token_hash,doc,error_code,model_version,execution_metadata }).retry(false).abortSignal(bounded(10_000))); },
+    generate: (config,input,onModelVersion,options) => web?generateWebResearch(config,input,searchKey,fetch,onModelVersion,options):generateResearchDocument(config,input,fetch,onModelVersion,options),
+    finish: async (rid,token_hash,doc,error_code,model_version,execution_metadata,web_metadata) => { checked(await trusted.rpc(web?"finish_web_research":"finish_researcher_execution_with_diagnostics",web?{rid,token_hash,doc,error_code,model_version,web_metadata}:{ rid,token_hash,doc,error_code,model_version,execution_metadata }).retry(false).abortSignal(bounded(10_000))); },
     diagnostic: (event) => logPlanningDiagnostic(event,console.info,"researcher"),
   });
 }
@@ -52,12 +57,12 @@ export async function researcherSnapshot(hasApprovedTasks: boolean): Promise<{ r
   if (!hasApprovedTasks || mode()!=="supabase") return { runs:[],artifacts:[],reviews:[] };
   const db=await supabase();
   const [runs,artifacts,reviews]=await Promise.all([
-    db.from("runs").select("id,task_id,mission_id,model,resolved_model,status,started_at,ended_at,expires_at,failure_code,execution_metadata").eq("purpose","researcher").order("started_at"),
+    db.from("runs").select("id,task_id,mission_id,model,resolved_model,status,started_at,ended_at,expires_at,failure_code,execution_metadata,research_mode,web_metadata").eq("purpose","researcher").order("started_at"),
     db.from("artifacts").select("id,task_id,run_id,content").eq("kind","researcher_document"),
     db.from("task_execution_reviews").select("id,run_id,decision,decided_by,decided_at"),
   ]);
   return {
-    runs:(checked(runs)??[]).map((r) => ({ id:r.id,taskId:r.task_id,missionId:r.mission_id,model:r.model,resolvedModel:r.resolved_model ?? null,status:r.status,startedAt:r.started_at,endedAt:r.ended_at,expiresAt:r.expires_at,failureCode:r.failure_code,diagnostics:researcherDiagnosticsSchema.safeParse(r.execution_metadata).data ?? null })),
+    runs:(checked(runs)??[]).map((r) => ({ id:r.id,taskId:r.task_id,missionId:r.mission_id,model:r.model,resolvedModel:r.resolved_model ?? null,mode:r.research_mode??"brief",webDiagnostics:webDiagnosticsSchema.safeParse(r.web_metadata).data??null,status:r.status,startedAt:r.started_at,endedAt:r.ended_at,expiresAt:r.expires_at,failureCode:r.failure_code,diagnostics:researcherDiagnosticsSchema.safeParse(r.execution_metadata).data ?? null })),
     artifacts:(checked(artifacts)??[]).map((a) => ({ id:a.id,taskId:a.task_id,runId:a.run_id,content:a.content })),
     reviews:(checked(reviews)??[]).map((r) => ({ id:r.id,runId:r.run_id,decision:r.decision,decidedBy:r.decided_by,decidedAt:r.decided_at })),
   };

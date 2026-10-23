@@ -29,7 +29,7 @@ export type PlanningStage = "claim" | "generation" | "finalize_plan" | "finalize
 export type PlanningDiagnostic = {
   stage: PlanningStage;
   outcome: "started" | "succeeded" | "failed";
-  provider?: "gemini" | "openai";
+  provider?: "gemini" | "openai" | "tavily";
   runId?: string;
   elapsedMs: number;
   code?: string;
@@ -38,7 +38,7 @@ export type PlanningDiagnostic = {
   transportPhase?: "response_headers" | "response_body";
   timeoutSource?: "application_deadline" | "transport_timeout" | "transport_error";
   timeoutMs?: number;
-  providerRequest?: number; retryEligible?: boolean;
+  operationStage?: "search"|"synthesis"|"complete"; providerRequest?: number; retryEligible?: boolean;
   retryDecision?: "eligible" | "disabled" | "not_eligible" | "scheduled" | "performed" | "skipped_budget";
   requestedModel?: string; resolvedModel?: string;
 };
@@ -67,9 +67,10 @@ export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: s
   const safe = {
     stage: ["claim", "generation", "finalize_plan", "finalize_failure", "recover", "start", "review"].includes(event.stage) ? event.stage : "unknown",
     outcome: ["started", "succeeded", "failed"].includes(event.outcome) ? event.outcome : "unknown",
-    provider: event.provider === "gemini" || event.provider === "openai" ? event.provider : undefined,
+    provider: event.provider === "gemini" || event.provider === "openai" || event.provider === "tavily" ? event.provider : undefined,
     runId: typeof event.runId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(event.runId) ? event.runId : undefined,
     elapsedMs: Number.isFinite(event.elapsedMs) ? Math.max(0, Math.round(event.elapsedMs)) : undefined,
+    operationStage: ["search","synthesis","complete"].includes(event.operationStage??"")?event.operationStage:undefined,
     providerRequest: event.providerRequest === 0 || event.providerRequest === 1 || event.providerRequest === 2 ? event.providerRequest : undefined,
     retryEligible: typeof event.retryEligible === "boolean" ? event.retryEligible : undefined,
     retryDecision: ["eligible","disabled","not_eligible","scheduled","performed","skipped_budget"].includes(event.retryDecision ?? "") ? event.retryDecision : undefined,

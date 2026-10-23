@@ -19,8 +19,8 @@ export default async function Dashboard({
   const data = await snapshot(user);
   const planning = await missionPlans(data.missions.some((m) => m.executionMode === "chief_of_staff"));
   const orchestration = await orchestrationSnapshot(planning.artifacts.length > 0);
-  const execution = await researcherSnapshot(orchestration.tasks.some((t) => t.status==="approved"));
   const extensions=await extensionSnapshot(data.missions.some(m=>m.executionMode==="chief_of_staff"));
+  const execution = await researcherSnapshot(orchestration.tasks.some((t) => t.status==="approved")||extensions.tasks.length>0);
   const aiEnabled = planningEnabled();
   const { error } = await searchParams;
   return (
@@ -207,7 +207,7 @@ export default async function Dashboard({
                       execution={{ runs:execution.runs.filter((r) => r.missionId===m.id), artifacts:execution.artifacts.filter((a) => orchestration.tasks.some((t) => t.id===a.taskId && t.missionId===m.id)), reviews:execution.reviews.filter((r) => execution.runs.some((run) => run.id===r.runId && run.missionId===m.id)), enabled:researcherEnabled() }}
                       owner={data.members.some((member) => member.workspaceId === m.workspaceId && member.userId === user && member.role === "owner")} />)}
                   </>}
-                  {m.executionMode==="chief_of_staff"&&(extensionsEnabled()||extensions.proposals.some(p=>p.mission_id===m.id))&&<MissionExtensions missionId={m.id} status={m.status} enabled={extensionsEnabled()}
+                  {m.executionMode==="chief_of_staff"&&(extensionsEnabled()||extensions.proposals.some(p=>p.mission_id===m.id))&&<MissionExtensions execution={{...execution,enabled:researcherEnabled()}} missionId={m.id} status={m.status} enabled={extensionsEnabled()}
                     owner={data.members.some(member=>member.workspaceId===m.workspaceId&&member.userId===user&&member.role==='owner')}
                     proposals={extensions.proposals.filter(p=>p.mission_id===m.id)} reviews={extensions.reviews.filter(r=>extensions.proposals.some(p=>p.id===r.proposal_id&&p.mission_id===m.id))} tasks={extensions.tasks.filter(t=>t.mission_id===m.id)}/>}
                   {m.status === "completed" && (

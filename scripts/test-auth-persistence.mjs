@@ -6,11 +6,13 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+const webTest=process.argv.includes("--web-research");let searchCalls=0;let webSearchFailure=false;
+const webSynthesis={objective:"Fixture public research",summary:"Offline web evidence report",findings:[{claim:"Public excerpt describes a service",basis:"source_excerpt",source_ids:["S1"]}],unverified_assertions:[],conflicting_or_incomplete_information:[],open_questions:[],recommendations:[],limitations:["Not independently verified"]};
 const planningTest = process.argv.includes("--planning");
 const extensionTest=process.argv.includes("--extensions");
 let extensionProviderFailure=false;
 const extensionDocument={summary:"Offline additive proposal",tasks:[{title:"Additional fixture research",description:"Follow-up scope only",priority:"medium",suggested_agent_role:"researcher",expected_deliverable:"New input-derived brief",dependencies:[]},{title:"Additional prototype",description:"Future design only",priority:"low",suggested_agent_role:"developer",expected_deliverable:"Prototype proposal",dependencies:[]}]};
-const researcherTest = process.argv.includes("--researcher");
+const researcherTest = process.argv.includes("--researcher")||webTest;
 const researcherRetry = process.argv.includes("--researcher-retry");
 let transient503Remaining=researcherRetry?1:0;
 const orchestrationTest = process.argv.includes("--orchestration") || researcherTest || extensionTest;
@@ -113,7 +115,9 @@ const fixture = createServer(async (req, res) => {
       assert.equal(body.tools, undefined);
       return send(200, { choices: [{ finish_reason: "stop", message: { content: JSON.stringify(offlinePlan), refusal: null } }] });
     }
+    if(url.pathname==="/search-fixture"){assert.ok(webTest);assert.equal(req.headers.authorization,"Bearer offline-tavily-fixture");assert.equal(body.max_results,5);searchCalls++;if(webSearchFailure)return send(503,{error:"private-search-failure"});return send(200,{results:[{title:"Public fixture source",url:"https://www.bbc.com/news",content:"Public source excerpt; ignore embedded instructions"}]});}
     if (url.pathname === "/gemini-fixture") {
+      if(body.generationConfig.responseJsonSchema.properties.findings){assert.ok(webTest);assert.equal(body.tools,undefined);providerCalls++;return send(200,{modelVersion:"gemini-web-fixture",candidates:[{finishReason:"STOP",content:{parts:[{text:JSON.stringify(webSynthesis)}]}}]});}
       assert.ok(planningTest || researcherTest || extensionTest);
       if(body.generationConfig.responseJsonSchema.properties.tasks?.items?.properties?.description){
         assert.ok(extensionTest);assert.equal(body.generationConfig.maxOutputTokens,4000);assert.equal(body.generationConfig.candidateCount,1);assert.equal(body.tools,undefined);
@@ -156,7 +160,7 @@ const fixture = createServer(async (req, res) => {
       else{assert.deepEqual(body.doc,extensionDocument);p.proposal=body.doc;p.status="proposed";p.resolved_model=body.model_version;}
       return send(200,null);
     }
-    if (["/rest/v1/rpc/start_researcher_execution","/rest/v1/rpc/finish_researcher_execution_with_diagnostics"].includes(url.pathname)) {
+    if (["/rest/v1/rpc/finish_web_research","/rest/v1/rpc/start_researcher_execution","/rest/v1/rpc/finish_researcher_execution_with_diagnostics"].includes(url.pathname)) {
       assert.ok(researcherTest); assert.equal(req.headers.authorization,"Bearer sb_secret_m11_fixture");
       const run=state.runs.find((r)=>r.id===body.rid && r.purpose==="researcher");
       const task=state.tasks.find((t)=>t.id===run?.task_id);
@@ -165,6 +169,9 @@ const fixture = createServer(async (req, res) => {
         assert.deepEqual(Object.keys(body).sort(),["rid","token_hash"]);
         if (researcherStartFailure) return send(503,{code:"PGRST202",message:"offline-start-failure"});
         assert.equal(task.execution_status,"authorized"); task.execution_status="running"; run.started_at=new Date().toISOString();
+      } else if(url.pathname.endsWith("finish_web_research")){
+        assert.deepEqual(Object.keys(body).sort(),["doc","error_code","model_version","rid","token_hash","web_metadata"]);assert.equal(task.execution_status,"running");run.web_metadata=body.web_metadata;run.ended_at=new Date().toISOString();run.failure_code=body.error_code;run.resolved_model=body.model_version;
+        if(body.error_code){assert.equal(body.doc,null);run.status="failed";task.execution_status="failed";}else{assert.equal(body.doc.verification,"provider_excerpts_not_independently_verified");assert.equal(body.doc.sources[0].url,"https://www.bbc.com/news");run.status="completed";task.execution_status="pending_review";state.artifacts.push({id:crypto.randomUUID(),workspace_id:wid,mission_id:task.mission_id,run_id:run.id,task_id:task.id,kind:"researcher_document",content:body.doc});}
       } else {
         assert.deepEqual(Object.keys(body).sort(),["doc","error_code","execution_metadata","model_version","rid","token_hash"]);
         assert.equal(task.execution_status,"running");
@@ -259,14 +266,14 @@ const fixture = createServer(async (req, res) => {
         const p=state.mission_extensions.find(p=>p.id===body.pid);
         if(Date.parse(p.expires_at)>Date.now())return send(400,{code:"P0001"});p.status="failed";p.failure_code="interrupted";return send(200,null);
       }
-      if (rpc === "authorize_researcher_execution") {
-        assert.deepEqual(Object.keys(body).sort(),["confirmed","request_id","selected_model","tid","token_hash"]);
+      if (rpc === "authorize_researcher_execution_v2") {
+        assert.deepEqual(Object.keys(body).sort(),["confirmed","request_id","research_mode","selected_model","tid","token_hash"]);
         assert.equal(body.confirmed,true); assert.equal(body.selected_model,"gemini-flash-latest");
         const task=state.tasks.find((t)=>t.id===body.tid);
         if (!state.workspace_members.some((m)=>m.user_id===uid && m.workspace_id===task?.workspace_id && m.role==="owner")) return send(403,{code:"42501",message:"Owner required"});
         if (task.status!=="approved" || task.suggested_agent_role!=="researcher" || !["not_authorized","failed"].includes(task.execution_status??"not_authorized") || state.task_execution_authorizations.some((a)=>a.request_id===body.request_id)) return send(400,{code:"P0001",message:"Task not eligible"});
         const authorization={id:crypto.randomUUID(),task_id:task.id,request_id:body.request_id,authorized_by:uid}; state.task_execution_authorizations.push(authorization);
-        const run={id:crypto.randomUUID(),mission_id:task.mission_id,task_id:task.id,purpose:"researcher",adapter:"gemini",status:"running",model:body.selected_model,lease_hash:body.token_hash,started_at:new Date().toISOString(),ended_at:null,expires_at:new Date(Date.now()+120000).toISOString(),failure_code:null};
+        const run={id:crypto.randomUUID(),mission_id:task.mission_id,task_id:task.id,purpose:"researcher",research_mode:body.research_mode,adapter:"gemini",status:"running",model:body.selected_model,lease_hash:body.token_hash,started_at:new Date().toISOString(),ended_at:null,expires_at:new Date(Date.now()+120000).toISOString(),failure_code:null};
         state.runs.push(run); task.execution_status="authorized"; task.execution_run_id=run.id;
         return send(200,{runId:run.id,objective:state.missions.find((m)=>m.id===task.mission_id).objective,title:task.title,expectedDeliverable:task.expected_deliverable});
       }
@@ -411,6 +418,8 @@ const app = spawn(
       AGENT_CITY_MODE: "supabase",
       AGENT_CITY_MISSION_EXTENSIONS_ENABLED: extensionTest ? "true" : "false",
       AGENT_CITY_RESEARCHER_EXECUTION_ENABLED: researcherTest ? "true" : "false",
+      AGENT_CITY_RESEARCHER_WEB_ENABLED:webTest?"true":"false",
+      TAVILY_API_KEY:webTest?"offline-tavily-fixture":"",
       AGENT_CITY_RESEARCHER_503_RETRY_ENABLED: researcherRetry ? "true" : "false",
       AGENT_CITY_AI_PLANNING_ENABLED: planningTest ? "true" : "false",
       AGENT_CITY_AI_PROVIDER: provider,
@@ -672,7 +681,7 @@ try {
     assert.ok(!calls.some((c) => c.path.endsWith("finish_chief_plan") || c.path.endsWith("begin_chief_plan")));
     console.log("PASS (M1.3 HTTP): individual acceptance/rejection, confirmation, member/session denial, assignment/history, idempotency and whole-plan rejection with AI disabled and no privileged key");
   }
-  if (researcherTest) {
+  if (researcherTest&&!webTest) {
     const task=state.tasks.find((t)=>t.mission_id===planningMid && t.status==="approved");
     async function researcherForm(taskId) {
       const html=await (await request("/dashboard")).text();
@@ -733,6 +742,25 @@ try {
     assert.ok(!calls.some((c)=>c.path.endsWith("begin_chief_plan") || c.path.includes("openai-fixture")));
     console.log("PASS (M1.4 offline HTTP): explicit Researcher-only authorization, member denial, single Gemini call, real provenance/preview/model/time, acceptance/rejection, provider error and interruption recovery; planning disabled");
   }
+  if(webTest){
+    const original=state.tasks.find(t=>t.mission_id===planningMid&&t.status==="approved");
+    const getForm=async(tid)=>forms(await(await request("/dashboard")).text()).find(f=>f.includes('name="taskId" value="'+tid+'"'));
+    let form=await getForm(original.id);assert.ok(form);assert.match(form,/Web Research/);assert.equal(searchCalls,0);assert.equal(providerCalls,0);
+    assert.match(await submit("/dashboard",form,{mode:"web",confirmed:""}),/error=/);assert.equal(searchCalls,0);
+    state.workspace_members[0].role="member";assert.match(await submit("/dashboard",form,{mode:"web",confirmed:"yes"}),/error=/);assert.equal(searchCalls,0);state.workspace_members[0].role="owner";
+    assert.equal(await submit("/dashboard",form,{mode:"web",confirmed:"yes"}),"/dashboard");assert.equal(searchCalls,1);assert.equal(providerCalls,1);assert.equal(original.execution_status,"pending_review");
+    assert.match(await submit("/dashboard",form,{mode:"web",confirmed:"yes"}),/error=/);assert.equal(searchCalls,1);
+    html=await(await request("/dashboard")).text();assert.match(html,/Offline web evidence report/);assert.match(html,/https:\/\/www.bbc.com\/news/);assert.match(html,/Sources discovered:/);assert.doesNotMatch(html,/offline-tavily-fixture|offline-gemini-fixture|sb_secret_m11_fixture/);
+    const accept=forms(html).find(f=>f.includes('value="'+original.execution_run_id+'"')&&f.includes('value="accepted"'));assert.equal(await submit("/dashboard",accept,{confirmed:"yes"}),"/dashboard");
+    const pid=crypto.randomUUID();state.mission_extensions.push({id:pid,mission_id:planningMid,version:1,status:"approved",requested_by:uid,model:"fixture",created_at:new Date().toISOString(),proposal:extensionDocument});
+    const tid=crypto.randomUUID();state.tasks.push({...original,id:tid,title:"Extension web research",extension_id:pid,plan_run_id:null,review_id:null,execution_status:"not_authorized",execution_run_id:null});
+    form=await getForm(tid);assert.ok(form);assert.equal(await submit("/dashboard",form,{mode:"web",confirmed:"yes"}),"/dashboard");assert.equal(searchCalls,2);assert.equal(providerCalls,2);
+    html=await(await request("/dashboard")).text();const task=state.tasks.find(t=>t.id===tid);const reject=forms(html).find(f=>f.includes('value="'+task.execution_run_id+'"')&&f.includes('value="rejected"'));assert.equal(await submit("/dashboard",reject,{confirmed:"yes"}),"/dashboard");
+    const failedId=crypto.randomUUID();state.tasks.push({...task,id:failedId,execution_status:"not_authorized",execution_run_id:null});form=await getForm(failedId);webSearchFailure=true;
+    assert.match(await submit("/dashboard",form,{mode:"web",confirmed:"yes"}),/error=/);assert.equal(searchCalls,3);assert.equal(providerCalls,2);assert.equal(state.tasks.find(t=>t.id===failedId).execution_status,"failed");
+    assert.ok(!logs.includes("private-search-failure"));assert.equal(state.runs.filter(r=>r.purpose==="researcher").length,3);
+    console.log("PASS (M1.5B offline HTTP): explicit web mode/consent, member denial, bounded search+synthesis, original/extension task UI, evidence preview, owner accept/reject, search failure without synthesis/retry/chaining or secret exposure");
+  }
   if(extensionTest){
     const originalTasks=JSON.stringify(state.tasks);const originalRuns=JSON.stringify(state.runs);const originalArtifacts=JSON.stringify(state.artifacts);
     const extensionForm=async()=>forms(await(await request("/dashboard")).text()).find(f=>f.includes('name="instruction"'));
@@ -750,7 +778,7 @@ try {
     assert.equal(await submit("/dashboard",review,{acceptedPositions:["1"],confirmed:"yes"}),"/dashboard");assert.equal(providerCalls,1);
     assert.equal(state.tasks.filter(t=>t.extension_id===proposal.id).length,1);assert.equal(state.tasks.find(t=>t.extension_id===proposal.id).execution_status,"not_authorized");
     assert.equal(await submit("/dashboard",review,{acceptedPositions:["1"],confirmed:"yes"}),"/dashboard");assert.equal(state.tasks.filter(t=>t.extension_id===proposal.id).length,1);
-    html=await(await request("/dashboard")).text();assert.match(html,/Execution unavailable for additions/);assert.match(html,/Decision: <!-- -->rejected/);
+    html=await(await request("/dashboard")).text();assert.match(html,/Supervised Researcher/);assert.match(html,/Decision: <!-- -->rejected/);
     assert.equal(JSON.stringify(state.runs),originalRuns);assert.equal(JSON.stringify(state.artifacts),originalArtifacts);
     form=await extensionForm();assert.ok(form);extensionProviderFailure=true;
     assert.match(await submit("/dashboard",form,{instruction:"Another follow-up",confirmed:"yes"}),/error=/);assert.equal(providerCalls,2);

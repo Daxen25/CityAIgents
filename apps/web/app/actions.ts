@@ -113,7 +113,7 @@ export async function finalizeTaskPlan(form: FormData) {
 
 export async function authorizeResearcherTask(form: FormData) {
   await requireUser();
-  await mutation(() => authorizeResearcher({ taskId:form.get("taskId"),requestId:form.get("requestId"),confirmed:form.get("confirmed")==="yes" }));
+  await mutation(() => authorizeResearcher({ taskId:form.get("taskId"),requestId:form.get("requestId"),mode:form.get("mode")??"brief",confirmed:form.get("confirmed")==="yes" }));
 }
 export async function recoverResearcherTask(form: FormData) {
   await requireUser();

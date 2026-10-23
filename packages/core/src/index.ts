@@ -132,3 +132,5 @@ export function mockResult() {
 
 export { researcherDiagnosticsSchema, type ResearcherDiagnostics, researchDocumentSchema, researcherAuthorizationInput, researcherReviewInput, type ResearchDocument, type ExecutionState, type ResearcherRun, type ResearcherArtifact, type ResearcherReview } from "./researcher";
 export { extensionSchema, extensionRequestSchema, extensionReviewSchema, type ExtensionPlan, type ExtensionProposal, type ExtensionReview, type ExtensionTask } from './extensions';
+
+export * from "./web-research";

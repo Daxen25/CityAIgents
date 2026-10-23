@@ -1,9 +1,11 @@
+import type {ResearcherRun,ResearcherArtifact,ResearcherReview} from "@agent-city/core";
+import {ResearcherExecution} from "./researcher-execution";
 import {randomUUID} from 'node:crypto';
 import {extensionSchema,type ExtensionProposal,type ExtensionReview,type ExtensionTask} from '@agent-city/core';
 import {generateMissionExtension,reviewMissionExtension,recoverMissionExtension} from '@/app/actions';
 import {Button} from './ui/button';
 import {ExtensionSubmit} from './extension-submit';
-export function MissionExtensions({missionId,status,owner,enabled,proposals,reviews,tasks}:{missionId:string;status:string;owner:boolean;enabled:boolean;proposals:ExtensionProposal[];reviews:ExtensionReview[];tasks:ExtensionTask[]}){
+export function MissionExtensions({missionId,status,owner,enabled,proposals,reviews,tasks,execution}:{missionId:string;status:string;owner:boolean;enabled:boolean;proposals:ExtensionProposal[];reviews:ExtensionReview[];tasks:ExtensionTask[];execution:{enabled:boolean;runs:ResearcherRun[];artifacts:ResearcherArtifact[];reviews:ResearcherReview[]}}){
  const open=proposals.some(p=>['running','proposed'].includes(p.status));
  return <section className="mt-5 border-t pt-4" aria-label="Extend mission with Chief of Staff">
   <h4 className="font-semibold">Extend mission with Chief of Staff</h4>
@@ -41,6 +43,6 @@ export function MissionExtensions({missionId,status,owner,enabled,proposals,revi
    </article>;
   })}
   <h5 className="mt-4 font-semibold">Approved additions · separate from original plan tasks</h5>
-  <ul className="space-y-2">{tasks.map(t=><li className="text-sm" key={t.id}>{t.title} · {t.status} · assigned {t.suggested_agent_role} ({t.agent_id}) · extension {proposals.find(p=>p.id===t.extension_id)?.version}. Execution unavailable for additions in M1.5A; original-plan execution approvals cannot be reused.</li>)}</ul>
+  <ul className="space-y-2">{tasks.map(t=><li className="text-sm" key={t.id}>{t.title} · {t.status} · assigned {t.suggested_agent_role} ({t.agent_id}) · extension {proposals.find(p=>p.id===t.extension_id)?.version}.<ResearcherExecution task={{id:t.id,status:"approved",suggestedAgentRole:t.suggested_agent_role,agentDefinitionKey:t.suggested_agent_role,executionStatus:t.execution_status}} owner={owner} enabled={execution.enabled} runs={execution.runs.filter(r=>r.taskId===t.id)} artifacts={execution.artifacts.filter(a=>a.taskId===t.id)} reviews={execution.reviews}/></li>)}</ul>
  </section>;
 }

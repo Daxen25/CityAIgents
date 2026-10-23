@@ -20,13 +20,14 @@
     "test:researcher-http": "node scripts/test-auth-persistence.mjs --researcher && node scripts/test-auth-persistence.mjs --researcher --researcher-retry",
     "test:extensions-http": "node scripts/test-auth-persistence.mjs --extensions",
     "test:runtime": "services/runtime/.venv/bin/python -m unittest discover -s services/runtime/tests -v",
-    "check": "npm run typecheck && npm test && npm run test:runtime && npm run test:auth-persistence && npm run test:planning-http && npm run test:orchestration-http && npm run test:researcher-http && npm run test:extensions-http && npm run build",
+    "check": "npm run typecheck && npm test && npm run test:runtime && npm run test:auth-persistence && npm run test:planning-http && npm run test:orchestration-http && npm run test:researcher-http && npm run test:extensions-http && npm run test:web-research-http && npm run build",
     "smoke": "node scripts/smoke.mjs",
     "verify:supabase": "node --use-env-proxy --import tsx scripts/verify-supabase.ts",
     "verify": "npm run verify:supabase",
     "test:auth-persistence": "node scripts/test-auth-persistence.mjs",
     "diagnose:gemini": "node --import tsx scripts/gemini-diagnostics.mts",
-    "typecheck:diagnostics": "tsc --noEmit --strict --skipLibCheck --target es2022 --lib esnext,dom --module esnext --moduleResolution bundler scripts/gemini-diagnostics.mts"
+    "typecheck:diagnostics": "tsc --noEmit --strict --skipLibCheck --target es2022 --lib esnext,dom --module esnext --moduleResolution bundler scripts/gemini-diagnostics.mts",
+    "test:web-research-http": "node scripts/test-auth-persistence.mjs --web-research"
   },
   "devDependencies": {
     "tsx": "4.23.15",
