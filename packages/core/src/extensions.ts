@@ -17,4 +17,4 @@ export interface ExtensionProposal {
  status:'running'|'proposed'|'approved'|'rejected'|'failed'|'stale';proposal:unknown;created_at:string;expires_at:string;failure_code:string|null;
 }
 export interface ExtensionReview {id:string;proposal_id:string;accepted_positions:number[];decided_by:string;decided_at:string}
-export interface ExtensionTask {id:string;mission_id:string;extension_id:string;title:string;status:string;proposal_position:number;suggested_agent_role:string;expected_deliverable:string;agent_id:string}
+export interface ExtensionTask {id:string;mission_id:string;extension_id:string;title:string;status:string;proposal_position:number;suggested_agent_role:string;expected_deliverable:string;agent_id:string;execution_status?:import("./researcher").ExecutionState}

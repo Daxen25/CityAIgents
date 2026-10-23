@@ -15,7 +15,7 @@ export const researchDocumentSchema = z.strictObject({
 });
 export type ResearchDocument = z.infer<typeof researchDocumentSchema>;
 export type ExecutionState = "not_authorized" | "authorized" | "running" | "pending_review" | "accepted" | "rejected" | "failed";
-export const researcherAuthorizationInput = z.strictObject({ taskId: z.uuid(), requestId: z.uuid(), confirmed: z.literal(true) });
+export const researcherAuthorizationInput = z.strictObject({ taskId: z.uuid(), requestId: z.uuid(), confirmed: z.literal(true), mode: z.enum(["brief","web"]).optional() });
 export const researcherReviewInput = z.strictObject({ runId: z.uuid(), requestId: z.uuid(), confirmed: z.literal(true), decision: z.enum(["accepted", "rejected"]) });
 // Public, bounded diagnostics only; never provider error bodies or document content.
 export const researcherDiagnosticsSchema = z.strictObject({
@@ -29,7 +29,7 @@ export type ResearcherDiagnostics = z.infer<typeof researcherDiagnosticsSchema>;
 export interface ResearcherRun {
   id: string; taskId: string; missionId: string; model: string; resolvedModel?: string | null;
   status: "running" | "completed" | "failed"; startedAt: string; endedAt: string | null;
-  expiresAt: string; failureCode: string | null; diagnostics?: ResearcherDiagnostics | null;
+  expiresAt: string; failureCode: string | null; diagnostics?: ResearcherDiagnostics | null; mode?: "brief" | "web"; webDiagnostics?: import("./web-research").WebDiagnostics | null;
 }
 export interface ResearcherArtifact { id: string; taskId: string; runId: string; content: unknown }
 export interface ResearcherReview { id: string; runId: string; decision: "accepted" | "rejected"; decidedBy: string; decidedAt: string }

@@ -9,6 +9,7 @@ globalThis.fetch = async (input, init) => {
     if (input instanceof Request) throw new Error("Unexpected SDK transport shape");
     return original(new URL("/openai-fixture", target), init);
   }
+  if(url.hostname === "api.tavily.com"){if(url.pathname!=="/search")throw new Error("Unexpected search endpoint");return original(new URL("/search-fixture",target),init);}
   if (url.hostname === "generativelanguage.googleapis.com") {
     if (input instanceof Request) throw new Error("Unexpected Gemini transport shape");
     if (url.pathname !== "/v1beta/models/gemini-flash-latest:generateContent") throw new Error("Unexpected Gemini model");

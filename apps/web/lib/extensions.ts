@@ -42,6 +42,6 @@ export async function extensionSnapshot(hasMissions:boolean):Promise<{proposals:
  const proposals=checked(p)??[];if(!proposals.length)return {proposals:[],reviews:[],tasks:[]};
  const [r,t]=await Promise.all([
   db.from('mission_extension_reviews').select('id,proposal_id,accepted_positions,decided_by,decided_at'),
-  db.from('tasks').select('id,mission_id,extension_id,title,status,proposal_position,suggested_agent_role,expected_deliverable,agent_id').not('extension_id','is',null),
+  db.from('tasks').select('id,mission_id,extension_id,title,status,proposal_position,suggested_agent_role,expected_deliverable,agent_id,execution_status').not('extension_id','is',null),
  ]);return {proposals,reviews:checked(r)??[],tasks:checked(t)??[]};
 }
