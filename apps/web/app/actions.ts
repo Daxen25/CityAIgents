@@ -11,6 +11,7 @@ import { createMission, createWorkspace, transition } from "@/lib/repository";
 import { planMission, recoverPlan } from "@/lib/planning";
 import { reviewTaskPlan } from "@/lib/orchestration";
 import { authorizeResearcher, recoverResearcher, reviewResearcher } from "@/lib/researcher";
+import {proposeExtension,reviewExtension,recoverExtension} from "@/lib/extensions";
 export async function login(form: FormData) {
   if (mode() === "mock") {
     (await cookies()).set("city-local", localToken(), {
@@ -121,4 +122,14 @@ export async function recoverResearcherTask(form: FormData) {
 export async function reviewResearcherResult(form: FormData) {
   await requireUser();
   await mutation(() => reviewResearcher({ runId:form.get("runId"),decision:form.get("decision"),requestId:form.get("requestId"),confirmed:form.get("confirmed")==="yes" }));
+}
+
+export async function generateMissionExtension(form:FormData){
+ await requireUser();await mutation(()=>proposeExtension({missionId:form.get('missionId'),requestId:form.get('requestId'),instruction:form.get('instruction'),confirmed:form.get('confirmed')==='yes'}));
+}
+export async function reviewMissionExtension(form:FormData){
+ await requireUser();await mutation(()=>reviewExtension({proposalId:form.get('proposalId'),requestId:form.get('requestId'),acceptedPositions:form.getAll('acceptedPositions').map(Number),confirmed:form.get('confirmed')==='yes'}));
+}
+export async function recoverMissionExtension(form:FormData){
+ await requireUser();await mutation(()=>recoverExtension(z.uuid().parse(form.get('proposalId'))));
 }
