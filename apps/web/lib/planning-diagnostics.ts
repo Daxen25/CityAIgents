@@ -62,7 +62,7 @@ export function diagnosticError(error: unknown): Pick<PlanningDiagnostic, "code"
   if (error instanceof GeminiHttpFailure) return { httpStatus: safeStatus(error.httpStatus), failureClass: safeClassification(error.failureClass) };
   return error instanceof PlanningRpcError ? { code: error.code, httpStatus: error.httpStatus } : {};
 }
-export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: string) => void = console.info, topic: "planning" | "researcher" = "planning") {
+export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: string) => void = console.info, topic: "planning" | "researcher" | "extension" = "planning") {
   // Reconstruct a whitelist, even if an accidental caller supplies extra properties.
   const safe = {
     stage: ["claim", "generation", "finalize_plan", "finalize_failure", "recover", "start", "review"].includes(event.stage) ? event.stage : "unknown",
@@ -83,5 +83,5 @@ export function logPlanningDiagnostic(event: PlanningDiagnostic, write: (line: s
     timeoutMs: Number.isInteger(event.timeoutMs) && event.timeoutMs! > 0 && event.timeoutMs! <= 45_000 ? event.timeoutMs : undefined,
   };
   // A diagnostics sink failure must never change authorization, persistence or retry behavior.
-  try { write(`agent_city.${topic === "researcher" ? "researcher" : "planning"} ${JSON.stringify(safe)}`); } catch { /* best effort */ }
+  try { write(`agent_city.${topic === "extension" ? "extension" : topic === "researcher" ? "researcher" : "planning"} ${JSON.stringify(safe)}`); } catch { /* best effort */ }
 }
